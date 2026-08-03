@@ -612,7 +612,7 @@ def build_mtaf(
     assert (
         "tail_init" in model_kwargs
         and model_kwargs["tail_init"] is not None
-        and isinstance(model_kwargs["tail_init"], list)
+        and isinstance(model_kwargs["tail_init"], (list, torch.Tensor))
     ), "mTAF requires the marginal tails at initialisation time!"
     assert (
         len(model_kwargs["tail_init"]) == dim
