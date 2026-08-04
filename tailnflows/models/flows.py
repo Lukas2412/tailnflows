@@ -514,8 +514,8 @@ def build_ttf_m(
     # set up tail transform
     tail_transform = TailAffineMarginalTransform(
         features=dim,
-        pos_tail_init=torch.tensor(pos_tail_init),
-        neg_tail_init=torch.tensor(neg_tail_init),
+        pos_tail_init = pos_tail_init.detach().clone().requires_grad_(True) if isinstance(pos_tail_init, torch.Tensor) else torch.tensor(pos_tail_init),
+        neg_tail_init = neg_tail_init.detach().clone().requires_grad_(True) if isinstance(neg_tail_init, torch.Tensor) else torch.tensor(neg_tail_init),
     )
 
     if fix_tails:
@@ -581,8 +581,7 @@ def build_gtaf(
 ):
     # model specific settings
     tail_init = model_kwargs.get("tail_init", None)  # in df terms
-    if isinstance(tail_init, list):
-        tail_init = torch.tensor(tail_init)
+    tail_init = tail_init.detach().clone().requires_grad_(True) if isinstance(tail_init, torch.Tensor) else torch.tensor(tail_init)
 
     # base distribution
     base_distribution = TrainableStudentT(dim, init=tail_init)
@@ -623,7 +622,7 @@ def build_mtaf(
     ), "mTAF must fix tails at init time!"
 
     # model specific settings
-    tail_init = torch.tensor(model_kwargs["tail_init"])  # in df terms
+    tail_init = model_kwargs["tail_init"].detach().clone() if isinstance(model_kwargs["tail_init"], torch.Tensor) else torch.tensor(model_kwargs["tail_init"])
     fix_tails = model_kwargs["fix_tails"]
 
     # organise into heavy/light components
