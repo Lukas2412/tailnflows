@@ -6,6 +6,8 @@ from nflows.transforms import Transform
 from tailnflows.models.utils import inv_sftplus, inv_sigmoid
 from typing import TypedDict, Optional, Callable
 from math import sqrt
+import numpy as np
+import scipy
 from tailnflows.models.simple_spline import (
     univariate_forward_rqs,
     univariate_inverse_rqs,
@@ -25,9 +27,10 @@ MAX_TAIL = 5.0
 LOW_TAIL_INIT = 0.1
 HIGH_TAIL_INIT = 0.9
 SQRT_2 = sqrt(2.0)
-SQRT_PI = sqrt(torch.pi)
-MIN_ERFC_INV = 1e-6
 PI = torch.pi
+SQRT_PI = sqrt(torch.pi)
+LOG_SQRT_PI = torch.log(torch.tensor(SQRT_PI))
+MIN_ERFC_INV = 1e-6
 
 
 class NNKwargs(TypedDict, total=False):
@@ -144,6 +147,66 @@ def _stable_erfcinv(x, log_x):
         -torch.special.ndtri(0.5 * standard_x) / SQRT_2,
         _small_erfcinv(small_log_x),
     )
+
+
+def _erfi_scipy(z: torch.Tensor) -> torch.Tensor:
+    """
+    Compute erfi(z) using scipy.special.erfi on CPU tensors.
+    """
+    z_np = z.detach().cpu().numpy()
+    erfi_np = scipy.special.erfi(z_np)
+    return torch.from_numpy(erfi_np).to(z.device)
+
+
+def _erfi_inv_initial_guess(x: torch.Tensor) -> torch.Tensor:
+    """
+    Provide a stable initial guess for computing erfi^{-1}(x) using Halley's method.
+    """
+    s = torch.sign(x)
+    x_abs = x.abs()
+
+    guess = torch.empty_like(x)
+
+    # Use series inversion (order 1) for small |x| < 1.5
+    small = x_abs < 1.5
+    if small.any():
+        # Leading term: erfi(y) ≈ 2y/√π
+        guess[small] = SQRT_PI / 2 * x[small]
+
+    # Use asymptotic inversion for large |x| >= 1.5
+    large = ~small
+    if large.any():
+        # Asymptotic expansion (first order) for large y: erfi(y) ~ e^{y^2} / (sqrt(pi) y)
+        # Solve: x_abs ≈ e^{y^2} / (sqrt(pi) y)
+        # Take log on both sides and approximate y^2 - log(y) with y^2 for large y:
+
+        guess_large = torch.sqrt(torch.log(x_abs[large]) + LOG_SQRT_PI)
+        guess[large] = s[large] * guess_large
+
+    return guess
+
+
+def _erfi_inv(x: torch.Tensor, iters: int = 6) -> torch.Tensor:
+    """
+    Compute erfi^{-1}(x) using:
+    - hybrid initial guess (series for small, asymptotic for large)
+    - Halley's method for refinement
+    """
+
+    y = _erfi_inv_initial_guess(x).detach().clone()
+
+    for _ in range(iters):
+        f = _erfi_scipy(y) - x                     # f(y)
+        fp = 2.0 / SQRT_PI * torch.exp(y * y)      # f'(y)
+        fpp = 2.0 * y * fp                         # f''(y)
+
+        # Halley update:
+        # y_{n+1} = y - (2 f f') / (2 (f')^2 - f f'')
+        nom = 2 * f * fp
+        denom = 2 * fp * fp - f * fpp
+        y = y - nom / denom
+
+    return y
 
 
 def _shift_power_transform_and_lad(z, tail_param):
