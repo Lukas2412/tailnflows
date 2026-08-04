@@ -5,6 +5,9 @@ from tailnflows.train import data_fit
 from tailnflows.utils import load_torch_data, add_raw_data, parallel_runner
 from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse_and_lad
 
+import logging
+logging.getLogger('torch.utils._device').setLevel(logging.ERROR)
+
 DEFAULT_DTYPE = torch.float32
 
 
@@ -210,6 +213,7 @@ def run_experiment(
     experiment_ix=1,
 ):
     # general setup
+
     torch.set_default_dtype(DEFAULT_DTYPE)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -217,6 +221,7 @@ def run_experiment(
         device = "cuda"
     else:
         device = "cpu"
+
 
      # create model and train
     if model_label.endswith('preprocess'):
@@ -283,12 +288,12 @@ def run_experiment(
 
 def configured_experiments():
     model_labels = model_definitions.keys()
-    model_labels = ['comet']
+    # model_labels = ['comet']
     seed = 2
-    out_path = "2024-11-synth-de"
-    nuisance_dfs = [0.5, 1.0, 2.0, 30.0]
-    target_d = [5, 50]
-    num_repeats = 1
+    out_path = "2026-08-04-synth-de"
+    nuisance_dfs = [0.5, 2.0]
+    target_d = [10]
+    num_repeats = 5
 
     experiments = [
         dict(
