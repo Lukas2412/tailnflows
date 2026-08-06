@@ -5,7 +5,7 @@ from nflows.transforms import made as made_module
 from nflows.transforms import Transform
 from tailnflows.models.utils import inv_sftplus, inv_sigmoid
 from typing import TypedDict, Optional, Callable
-from math import sqrt
+import math
 import numpy as np
 import scipy
 from tailnflows.models.simple_spline import (
@@ -26,10 +26,10 @@ from tailnflows.models.simple_spline import forward_rqs, inverse_rqs
 MAX_TAIL = 5.0
 LOW_TAIL_INIT = 0.1
 HIGH_TAIL_INIT = 0.9
-SQRT_2 = sqrt(2.0)
-PI = torch.pi
-SQRT_PI = sqrt(torch.pi)
-LOG_SQRT_PI = torch.log(torch.tensor(SQRT_PI))
+SQRT_2 = math.sqrt(2.0)
+PI = math.pi
+SQRT_PI = math.sqrt(PI)
+LOG_SQRT_PI = math.log(SQRT_PI)
 MIN_ERFC_INV = 1e-6
 
 
@@ -120,7 +120,7 @@ class ExtremeNetwork(torch.nn.Module):
 def _erfcinv(x):
     with torch.no_grad():
         x = torch.clamp(x, min=MIN_ERFC_INV)
-    return -torch.special.ndtri(0.5 * x) / SQRT_2
+    return -torch.special.ndtri(0.5 * x) / x.new_tensor(SQRT_2)
 
 
 def _small_erfcinv(log_g):
@@ -129,10 +129,10 @@ def _small_erfcinv(log_g):
     """
     log_z_sq = 2 * log_g
 
-    inner = torch.log(torch.tensor(2 / PI)) - log_z_sq
-    inner -= (torch.log(torch.tensor(2 / PI)) - log_z_sq).log()
+    inner = torch.log(log_g.new_tensor(2 / PI)) - log_z_sq
+    inner -= (torch.log(log_g.new_tensor(2 / PI)) - log_z_sq).log()
 
-    z = inner.sqrt() / SQRT_2
+    z = inner.sqrt() / log_g.new_tensor(SQRT_2)
 
     return z
 
@@ -142,11 +142,18 @@ def _stable_erfcinv(x, log_x):
         standard_x = torch.clamp(x, min=MIN_ERFC_INV, max=None)
         small_log_x = torch.clamp(log_x, min=None, max=torch.tensor(MIN_ERFC_INV, device=log_x.device).log())
 
-    return torch.where(
+    z = torch.where(
         x > MIN_ERFC_INV,
-        -torch.special.ndtri(0.5 * standard_x) / SQRT_2,
+        -torch.special.ndtri(0.5 * standard_x) / x.new_tensor(SQRT_2),
         _small_erfcinv(small_log_x),
     )
+
+    # Do one Newton step for better accuracy near the breaking point
+    denom = -2.0 / x.new_tensor(SQRT_PI) * torch.exp(-z.square())
+    denom = torch.where(denom == 0.0, torch.finfo(z.dtype).tiny, denom) # avoid devision by 0
+    z = z - (torch.special.erfc(z) - x) / denom
+
+    return z
 
 
 def _erfi_scipy(z: torch.Tensor) -> torch.Tensor:
@@ -209,10 +216,15 @@ def _erfi_inv(x: torch.Tensor, iters: int = 6) -> torch.Tensor:
     return y
 
 
+###############################################################
+# ===== auxiliary functions for modified TTF transforms ===== #
+###############################################################
+
+
 def _shift_power_transform_and_lad(z, tail_param):
     transformed = (SQRT_2 / SQRT_PI) * (torch.pow(1 + z / tail_param, tail_param) - 1)
     lad = (tail_param - 1) * torch.log(1 + z / tail_param)
-    lad += torch.log(torch.tensor(SQRT_2 / SQRT_PI))
+    lad += torch.log(z.new_tensor(SQRT_2 / SQRT_PI))
     return transformed, lad
 
 
@@ -221,32 +233,43 @@ def _shift_power_inverse_and_lad(x, tail_param):
         (SQRT_PI / SQRT_2) * tail_param * (torch.pow(1 + x, 1 / tail_param) - 1)
     )
     lad = ((1 / tail_param) - 1) * torch.log(1 + x)
-    lad -= torch.log(torch.tensor(SQRT_2 / SQRT_PI))
+    lad -= torch.log(x.new_tensor(SQRT_2 / SQRT_PI))
     return transformed, lad
 
 
 def _extreme_transform_and_lad(z, tail_param):
-    g = torch.erfc(z / SQRT_2)
-    x = (torch.pow(g, -tail_param) - 1) / tail_param
+    g = torch.special.erfc(z / SQRT_2)
+    log_g = torch.log(g)
+    x = torch.expm1(-tail_param * log_g) / tail_param
 
     lad = torch.log(g) * (-tail_param - 1)
     lad -= 0.5 * torch.square(z)
-    lad += torch.log(torch.tensor(SQRT_2 / SQRT_PI))
+    lad += torch.log(z.new_tensor(SQRT_2 / SQRT_PI))
 
     return x, lad
 
 
 def _extreme_inverse_and_lad(x, tail_param):
-    inner = 1 + tail_param * x
-    g = torch.pow(inner, -1 / tail_param)
-    log_g = -torch.log(inner) / tail_param
-    erfcinv_val = _stable_erfcinv(g, log_g)
+    log_inner = torch.log1p(tail_param * x)
+    log_g = -log_inner / tail_param
+    g = torch.exp(log_g)
+
+    # Optionally do erfcinv in float64 for stability
+    use64 = (x.dtype == torch.float32)
+    if use64:
+        erfcinv_val64 = _stable_erfcinv(g.to(torch.float64), log_g.to(torch.float64))
+        erfcinv_val = erfcinv_val64.to(x.dtype)
+        lad_summand64 = erfcinv_val64 * erfcinv_val64
+        lad_summand = lad_summand64.to(x.dtype)
+    else:
+        erfcinv_val = _stable_erfcinv(g, log_g)
+        lad_summand = erfcinv_val * erfcinv_val
 
     z = SQRT_2 * erfcinv_val
 
-    lad = (-1 - 1 / tail_param) * torch.log(inner)
-    lad += torch.square(erfcinv_val)
-    lad += torch.log(torch.tensor(SQRT_PI / SQRT_2))
+    lad = (-1 - 1 / tail_param) * log_inner
+    lad += lad_summand
+    lad += torch.log(x.new_tensor(SQRT_PI / SQRT_2))
 
     return z, lad
 
@@ -257,7 +280,7 @@ def neg_extreme_transform_and_lad(z, tail_param):
         inner -= (torch.log(torch.tensor(2 / torch.pi)) - 2 * log_z).log()
         return inner.pow(0.5) / SQRT_2
 
-    erfc_val = torch.erfc(z / SQRT_2)
+    erfc_val = torch.special.erfc(z / SQRT_2)
     g = erfc_val.pow(-tail_param)
 
     stable_g = g > MIN_ERFC_INV
@@ -267,7 +290,7 @@ def neg_extreme_transform_and_lad(z, tail_param):
 
     log_z = -torch.log(z[~stable_g])
     log_z += -z[~stable_g].square() / 2
-    log_z += torch.log(torch.tensor(SQRT_2 / SQRT_PI))
+    log_z += torch.log(z.new_tensor(SQRT_2 / SQRT_PI))
     log_z *= -tail_param[~stable_g]
 
     erfcinv_val[~stable_g] = _small_erfcinv(log_z)
@@ -275,7 +298,7 @@ def neg_extreme_transform_and_lad(z, tail_param):
     x = -erfcinv_val * 2 / (SQRT_PI * tail_param)
 
     lad = torch.square(erfcinv_val) - 0.5 * torch.square(z)
-    lad += torch.log(torch.tensor(SQRT_2 / SQRT_PI))
+    lad += torch.log(z.new_tensor(SQRT_2 / SQRT_PI))
     lad += (-1 - tail_param) * torch.log(erfc_val)
 
     return x, lad
@@ -344,7 +367,7 @@ def _tail_affine_transform(z, pos_tail, neg_tail, shift, scale):
     sign = torch.sign(z)
     tail_param = torch.where(z > 0, pos_tail, neg_tail)
     x, lad = _extreme_transform_and_lad(torch.abs(z), tail_param)
-    lad += torch.log(scale)
+    lad = lad + torch.log(scale)
     return sign * x * scale + shift, lad
 
 
@@ -358,7 +381,7 @@ def _tail_affine_inverse(x, pos_tail, neg_tail, shift, scale):
 
     z, lad = _extreme_inverse_and_lad(torch.abs(x), torch.abs(tail_param))
 
-    lad -= torch.log(scale)
+    lad = lad - torch.log(scale)
     return sign * z, lad
 
 
@@ -366,14 +389,14 @@ def _tail_forward(z, pos_tail, neg_tail):
     sign = torch.sign(z)
     tail_param = torch.where(z > 0, pos_tail, neg_tail)
     x, lad = _extreme_transform_and_lad(torch.abs(z), tail_param)
-    return sign * x, lad.sum(axis=1)
+    return sign * x, lad.sum(dim=-1)
 
 
 def _tail_inverse(x, pos_tail, neg_tail):
     sign = torch.sign(x)
     tail_param = torch.where(x > 0, pos_tail, neg_tail)
     z, lad = _extreme_inverse_and_lad(torch.abs(x), torch.abs(tail_param))
-    return sign * z, lad.sum(axis=1)
+    return sign * z, lad.sum(dim=-1)
 
 
 def _copula_transform_and_lad(u, tail_param):
@@ -674,7 +697,7 @@ class RQSMarginalTransform(Transform):
             **self.spline_kwargs,
         )
 
-        return outputs, logabsdet.sum(axis=1)
+        return outputs, logabsdet.sum(dim=-1)
 
     def inverse(self, inputs, context=None):
         batch_dim = inputs.shape[0]
@@ -689,7 +712,7 @@ class RQSMarginalTransform(Transform):
             **self.spline_kwargs,
         )
 
-        return outputs, logabsdet.sum(axis=1)
+        return outputs, logabsdet.sum(dim=-1)
 
 
 class TailAffineMarginalTransform(Transform):
@@ -749,14 +772,14 @@ class TailAffineMarginalTransform(Transform):
         x, lad = _tail_affine_transform(
             z, self.pos_tail, self.neg_tail, self.shift, self.scale
         )
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
     def inverse(self, x, context=None):
         """heavy -> light"""
         z, lad = _tail_affine_inverse(
             x, self.pos_tail, self.neg_tail, self.shift, self.scale
         )
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
     def fix_tails(self):
         # freeze only the parameters related to the tail
@@ -820,7 +843,7 @@ class AsymmetricTailAffineMarginalTransform(Transform):
         """light -> heavy"""
         
         # tail transform
-        rescale = torch.tensor(SQRT_PI / SQRT_2) # ensures agreement on lad at the origin 
+        rescale = z.new_tensor(SQRT_PI / SQRT_2) # ensures agreement on lad at the origin 
         pos_x, pos_lad = _extreme_inverse_and_lad(torch.abs(z) / rescale, self.pos_tail)
         neg_x, neg_lad = _extreme_transform_and_lad(torch.abs(z) * rescale, self.neg_tail)
         neg_x = -neg_x
@@ -836,7 +859,7 @@ class AsymmetricTailAffineMarginalTransform(Transform):
         x = x * self.scale + self.shift
 
         lad += torch.log(self.scale)
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
     def forward(self, x, context=None):
         """
@@ -848,7 +871,7 @@ class AsymmetricTailAffineMarginalTransform(Transform):
         x = (x - self.shift) / self.scale
 
         # tail transform
-        rescale = torch.tensor(SQRT_PI / SQRT_2) # ensures agreement on lad at the origin 
+        rescale = x.new_tensor(SQRT_PI / SQRT_2) # ensures agreement on lad at the origin 
         pos_z, pos_lad = _extreme_inverse_and_lad(torch.abs(x) / rescale, self.pos_tail)
         neg_z, neg_lad = _extreme_transform_and_lad(torch.abs(x) * rescale, self.neg_tail)
         neg_z = -neg_z
@@ -862,7 +885,7 @@ class AsymmetricTailAffineMarginalTransform(Transform):
 
         lad -= torch.log(self.scale)
 
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
 
 class TailSwitchMarginalTransform(Transform):
@@ -935,7 +958,7 @@ class TailSwitchMarginalTransform(Transform):
         # so data has tail_param tail
         z, lad = TailSwitchMarginalTransform._transformation(torch.abs(x), -tail_param)
         lad -= torch.log(self.scale)
-        return sign * z, lad.sum(dim=1)
+        return sign * z, lad.sum(dim=-1)
 
     def inverse(self, z, context=None):
         sign = torch.sign(z)
@@ -947,7 +970,7 @@ class TailSwitchMarginalTransform(Transform):
         x, lad = TailSwitchMarginalTransform._transformation(torch.abs(z), tail_param)
         lad += torch.log(self.scale)
         x = sign * x * self.scale + self.shift
-        return x, lad.sum(dim=1)
+        return x, lad.sum(dim=-1)
 
     @property
     def scale(self):
@@ -970,7 +993,7 @@ class TailSwitchMarginalTransform(Transform):
     def extreme_transform(z, tau):
         # tau > 1
         tail_param = (tau - 1).abs()
-        g = torch.erfc(z / SQRT_2)
+        g = torch.special.erfc(z / SQRT_2)
         x = (torch.pow(g, -tail_param) - 1) / tail_param
         x *= SQRT_PI / SQRT_2
 
@@ -981,14 +1004,14 @@ class TailSwitchMarginalTransform(Transform):
 
     @staticmethod
     def asymp_h_transform(z):
-        g = torch.erfc(z / SQRT_2)
+        g = torch.special.erfc(z / SQRT_2)
         return -torch.log(g) * SQRT_PI / SQRT_2
 
     @staticmethod
     def inter_h_transform(z, tau):
         # tau in [0, 1]
         tail_param = tau - 1
-        g = torch.erfc(z / SQRT_2)
+        g = torch.special.erfc(z / SQRT_2)
         x = -_erfcinv(g.pow(-tail_param))
         x *= SQRT_2 / tail_param
 
@@ -1002,7 +1025,7 @@ class TailSwitchMarginalTransform(Transform):
     def inter_l_transform(z, tau):
         # tau in [-1, 0]
         tail_param = -tau - 1  # tail_param = 1 - (tau - 1)
-        inner = torch.erfc(-tail_param * z / SQRT_2)
+        inner = torch.special.erfc(-tail_param * z / SQRT_2)
 
         g = torch.pow(inner, -1 / tail_param)
         log_g = -torch.log(inner) / tail_param
@@ -1140,13 +1163,13 @@ class SmoothTailSwitchMarginalTransform(Transform):
         x = (x - self.shift) / self.scale
         z, lad = self._tail_inverse(x, self.pos_tail, self.neg_tail)
         lad -= torch.log(self.scale)
-        return z, lad.sum(dim=1)
+        return z, lad.sum(dim=-1)
 
     def inverse(self, z, context=None):
         x, lad = self._tail_forward(z, self.pos_tail, self.neg_tail)
         lad += torch.log(self.scale)
         x = x * self.scale + self.shift
-        return x, lad.sum(dim=1)
+        return x, lad.sum(dim=-1)
 
     @property
     def scale(self):
@@ -1323,7 +1346,7 @@ class InterpMarginalTransform(Transform):
         x, lad = InterpMarginalTransform._transformation(torch.abs(z), tail_param)
         lad += torch.log(self.scale)
         x = sign * x * self.scale + self.shift
-        return x, lad.sum(dim=1)
+        return x, lad.sum(dim=-1)
 
     def forward(self, x, context=None):
         # affine
@@ -1336,13 +1359,13 @@ class InterpMarginalTransform(Transform):
             torch.abs(x), tail_param, inverse=True
         )
         lad -= torch.log(self.scale)
-        return sign * z, lad.sum(dim=1)
+        return sign * z, lad.sum(dim=-1)
 
     @staticmethod
     def interpolated_transformation(z, tail_param):
         # interpolated
         intermediate_tail_p = (0.5 * (tail_param + 1)).abs()  # always in [0, 1]
-        _y = torch.exp(-torch.tensor(SQRT_2 / SQRT_PI) * z)
+        _y = torch.exp(-z.new_tensor(SQRT_2 / SQRT_PI) * z)
         stable_y = _y > MIN_ERFC_INV
 
         erfcinv_y = torch.zeros_like(_y)
@@ -1351,17 +1374,17 @@ class InterpMarginalTransform(Transform):
 
         low = SQRT_2 * erfcinv_y
 
-        dlow_dx = torch.exp(erfcinv_y.square() - torch.tensor(SQRT_2 / SQRT_PI) * z)
+        dlow_dx = torch.exp(erfcinv_y.square() - z.new_tensor(SQRT_2 / SQRT_PI) * z)
 
         high = torch.where(
-            torch.erfc(z / SQRT_2) > MIN_ERFC_INV,
-            -torch.erfc(z / SQRT_2).log(),
-            z.log() + 0.5 * z.square() + torch.log(torch.tensor(SQRT_PI / SQRT_2)),
-        ) * torch.tensor(SQRT_PI / SQRT_2)
+            torch.special.erfc(z / SQRT_2) > MIN_ERFC_INV,
+            -torch.special.erfc(z / SQRT_2).log(),
+            z.log() + 0.5 * z.square() + torch.log(z.new_tensor(SQRT_PI / SQRT_2)),
+        ) * z.new_tensor(SQRT_PI / SQRT_2)
         dhigh_dx = torch.where(
             z < 10,
-            torch.exp(-0.5 * z.square()) / torch.erfc(z / SQRT_2),
-            torch.tensor(SQRT_PI / SQRT_2) * z,
+            torch.exp(-0.5 * z.square()) / torch.special.erfc(z / SQRT_2),
+            (SQRT_PI / SQRT_2) * z,
         )
 
         intermediate_x = intermediate_tail_p * high + (1 - intermediate_tail_p) * low
@@ -1429,9 +1452,9 @@ class InterpMarginalTransform(Transform):
 
         # fatten the tails
         heavy_tail_p = (tail_param - 1).abs()  # lambda - 1 should always be positive
-        g = torch.erfc(z / SQRT_2)
+        g = torch.special.erfc(z / SQRT_2)
         heavy_x = (torch.pow(g, -heavy_tail_p) - 1) / heavy_tail_p
-        heavy_x *= torch.tensor(SQRT_PI / SQRT_2)
+        heavy_x *= (SQRT_PI / SQRT_2)
 
         heavy_lad = torch.log(g) * (-heavy_tail_p - 1)
         heavy_lad -= 0.5 * torch.square(z)
@@ -1440,7 +1463,7 @@ class InterpMarginalTransform(Transform):
         light_tail_p = (
             torch.abs(tail_param) - 1
         ).abs()  # |lambda| - 1 should always be positive
-        inner = 1 + torch.tensor(SQRT_2 / SQRT_PI) * light_tail_p * z
+        inner = 1 + (SQRT_2 / SQRT_PI) * light_tail_p * z
         g = torch.pow(inner, -1 / light_tail_p)
         stable_g = g > MIN_ERFC_INV
 
@@ -1513,7 +1536,7 @@ class MaskedTailSwitchAffineTransform(AutoregressiveTransform):
 
         x, lad = _tail_switch_transform(z, pos_tail, neg_tail, shift, scale)
 
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
     def _elementwise_inverse(self, x, autoregressive_params):
         raise NotImplementedError
@@ -1565,7 +1588,7 @@ class MaskedAutoregressiveTailAffineMarginalTransform(AutoregressiveTransform):
         scale = softplus(unc_scale)
 
         x, lad = _tail_affine_transform(z, pos_tail, neg_tail, shift, scale)
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
     def _elementwise_inverse(self, x, autoregressive_params):
         """heavy -> light"""
@@ -1578,7 +1601,7 @@ class MaskedAutoregressiveTailAffineMarginalTransform(AutoregressiveTransform):
         scale = softplus(unc_scale)
 
         z, lad = _tail_affine_inverse(x, pos_tail, neg_tail, shift, scale)
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
     def _unconstrained_params(self, autoregressive_params):
         autoregressive_params = autoregressive_params.view(
@@ -1652,7 +1675,7 @@ class TailScaleShiftMarginalTransform(Transform):
         scale_z, scale_lad = two_scale_affine_inverse(x, shift, neg_scale, pos_scale)
         z, tail_lad = _tail_inverse(scale_z, pos_tail, neg_tail)
 
-        return z, tail_lad + scale_lad.sum(axis=1)
+        return z, tail_lad + scale_lad.sum(dim=-1)
 
     def inverse(self, z, context=None):
         """light -> heavy"""
@@ -1665,7 +1688,7 @@ class TailScaleShiftMarginalTransform(Transform):
         tail_x, tail_lad = _tail_forward(z, pos_tail, neg_tail)
         x, scale_lad = two_scale_affine_forward(tail_x, shift, neg_scale, pos_scale)
 
-        return x, tail_lad + scale_lad.sum(axis=1)
+        return x, tail_lad + scale_lad.sum(dim=-1)
 
 
 class CopulaMarginalTransform(Transform):
@@ -1701,7 +1724,7 @@ class CopulaMarginalTransform(Transform):
         )
         sign = torch.sign(u)
         x, lad = _copula_transform_and_lad(torch.abs(u), tail_param)
-        return sign * x, lad.sum(axis=1)
+        return sign * x, lad.sum(dim=-1)
 
     def inverse(self, x, context=None):
         """heavy -> light"""
@@ -1710,7 +1733,7 @@ class CopulaMarginalTransform(Transform):
         )
         sign = torch.sign(x)
         u, lad = _copula_inverse_and_lad(torch.abs(x), tail_param)
-        return sign * u, lad.sum(axis=1)
+        return sign * u, lad.sum(dim=-1)
 
 
 class GTransform(Transform):
@@ -1738,11 +1761,11 @@ class GTransform(Transform):
 
     def forward(self, z, context=None):
         x, lad = _g_transform_and_lad(z, self.p, self.kappa, self.epsilon, self.delta)
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
     def inverse(self, x, context=None):
         z, lad = _g_inverse_and_lad(x, self.p, self.kappa, self.epsilon, self.delta)
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
 
 class ExpTailTransform(Transform):
@@ -1759,11 +1782,11 @@ class ExpTailTransform(Transform):
 
     def forward(self, x, context=None):
         y, lad = _exp_tail_transform_and_lad(x, self.lam)
-        return y, lad.sum(axis=1)
+        return y, lad.sum(dim=-1)
 
     def inverse(self, y, context=None):
         x, lad = _exp_tail_inverse_and_lad(y, self.lam)
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
 
 class FullTailMarginalTransform(Transform):
@@ -1819,7 +1842,7 @@ class MaskedExtremeAutoregressiveTransform(AutoregressiveTransform):
         scale = softplus(unc_scale)
 
         x, lad = _tail_affine_transform(z, pos_tail, neg_tail, shift, scale)
-        return x, lad.sum(axis=1)
+        return x, lad.sum(dim=-1)
 
     def _elementwise_inverse(self, x, autoregressive_params):
         unc_pos_tail, unc_neg_tail, unc_scale, shift_param = self._unconstrained_params(
@@ -1831,7 +1854,7 @@ class MaskedExtremeAutoregressiveTransform(AutoregressiveTransform):
         scale = softplus(unc_scale)
 
         z, lad = _tail_affine_inverse(x, pos_tail, neg_tail, shift, scale)
-        return z, lad.sum(axis=1)
+        return z, lad.sum(dim=-1)
 
     def _unconstrained_params(self, autoregressive_params):
         autoregressive_params = autoregressive_params.view(
@@ -1883,35 +1906,37 @@ def bisection_search(func, x_0_low, x_0_high, target, tol=1e-6, max_iter=100):
     return 0.5 * (x_0_low + x_0_high)
 
 
-class Mixture(Transform):
-    def __init__(self, transform_1, transform_2):
-        self.transform_1 = transform_1
-        self.transform_2 = transform_2
-        self._unc_mix_param = torch.nn.Parameter(torch.tensor(0.0))
-        super(Transform, self).__init__()
 
-    def inverse(self, x, context=None):
-        z_1, lad_1 = transform_1.inverse(x, context)
-        z_2, lad_2 = transform_2.inverse(x, context)
+# The implementation here makes no sense
+# class Mixture(Transform):
+#     def __init__(self, transform_1, transform_2):
+#         self.transform_1 = transform_1
+#         self.transform_2 = transform_2
+#         self._unc_mix_param = torch.nn.Parameter(torch.tensor(0.0))
+#         super(Transform, self).__init__()
 
-        mix_param = softplus(self._unc_mix_param)
+#     def inverse(self, x, context=None):
+#         z_1, lad_1 = self.transform_1.inverse(x, context)
+#         z_2, lad_2 = self.transform_2.inverse(x, context)
 
-        z = z_1 * mix_param + z_2 * (1 - mix_param)
-        z = lad_1 * mix_param + lad_2 * (1 - mix_param)
+#         mix_param = softplus(self._unc_mix_param)
 
-        return torch.hstack(xs), lad
+#         z = z_1 * mix_param + z_2 * (1 - mix_param)
+#         z = lad_1 * mix_param + lad_2 * (1 - mix_param)
 
-    def forward(self, z, context=None):
-        x_1, _ = self.transform_1.forward(z)
-        x_2, _ = self.transform_2.forward(z)
-        x_1_higher = x_1 > x_2
-        x_0_high = torch.where(x_1_higher, x_1, x_0)
-        x_0_low = torch.where(x_1_higher, x_2, x_1)
+#         return torch.hstack(xs), lad
 
-        inverse_trans = lambda x: self.inverse(x, context)
-        x = bisection_search(
-            inverse_trans, x_0_low, x_0_high, target=z, tol=1e-6, max_iter=100
-        )  # which x gives z?
-        _, inv_lad = inverse_trans(x.detach())
-        lad = -inv_lad
-        return x, lad
+#     def forward(self, z, context=None):
+#         x_1, _ = self.transform_1.forward(z)
+#         x_2, _ = self.transform_2.forward(z)
+#         x_1_higher = x_1 > x_2
+#         x_0_high = torch.where(x_1_higher, x_1, x_2)
+#         x_0_low = torch.where(x_1_higher, x_2, x_1)
+
+#         inverse_trans = lambda x: self.inverse(x, context)
+#         x = bisection_search(
+#             inverse_trans, x_0_low, x_0_high, target=z, tol=1e-6, max_iter=100
+#         )  # which x gives z?
+#         _, inv_lad = inverse_trans(x.detach())
+#         lad = -inv_lad
+#         return x, lad
