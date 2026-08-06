@@ -11,6 +11,8 @@ from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse
 
 DEFAULT_DTYPE = torch.float32
 
+# NOTE: I think this script is supposed to only run fama5, insurance and sp500 experiments (not climdex!)
+
 """
 Model specifications
 """
@@ -271,15 +273,16 @@ def configured_experiments():
         "gtaf"
     ]
 
-    experiment_name = "2025-01-de"
-    data_sources = ['fama5', 'sp500', 'insurance']
+    experiment_name = "2026-08-01-de-insurance-split0-run2"
+    # data_sources = ['fama5', 'sp500', 'insurance']
+    data_sources = ['insurance']
 
     opt_params = {
         "lr": 5e-3, 
         "num_steps": 1_00, 
         "batch_size": 512,
         "early_stop_patience": 1_00,
-        "eval_period": 20,
+        "eval_period": 1, # period for computing validation loss
         "lr_scheduler": "cosine_anneal_wr",
     }
 
@@ -302,7 +305,7 @@ def configured_experiments():
                     experiments.append(dict(
                         data_source=data_source,
                         experiment_name=experiment_name,
-                        split=0,
+                        split=0, # NOTE: Edit to use other split?
                         seed=repeat_seed,
                         model_label=model_label,
                         opt_params=opt_params,
