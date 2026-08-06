@@ -16,6 +16,10 @@ class HiddenPrints:
         sys.stdout = self._original_stdout
 
 def estimate_df(marginal_data, verbose=True):
+    """
+    IMPORTANT:  Uses absolute of input data, i.e. only estimates symmetric tails.
+                Account for this by feeding it positive and negative data separately!
+    """
     ordered_data = np.sort(np.abs(marginal_data))[::-1]
 
     amse_border = 1.

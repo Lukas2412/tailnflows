@@ -15,6 +15,8 @@ def load_return_data(top_n_symbols):
         lambda col: (col != 0).sum()
     )
     incomplete_sequence = list(traded_days[traded_days < traded_days.max()].index)
+    print(f"Max traded days: {traded_days.max()}")
+    print(f"Number of stocks with incomplete sequence: {len(incomplete_sequence)}")
     most_traded = most_traded.drop(["GOOGL"] + incomplete_sequence)
     wanted_symbols = list(
         most_traded.sort_values("Volume", ascending=False).index[:top_n_symbols]

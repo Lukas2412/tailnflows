@@ -3,6 +3,7 @@ Script for creating a number of data splits + estimate tails from data
 """
 
 import torch
+import numpy as np
 import tqdm
 from tailnflows.utils import add_raw_data, get_data_path
 from tailnflows.models.tail_estimation import estimate_df
@@ -12,10 +13,11 @@ def generate_data_split(split, seed, out_path, x):
 
     n = x.shape[0]
     dim = x.shape[1]
-    # print(
-    #     f'Data: n: {n}, d: {dim}'    
-    # )
+    print(
+        f'Data: n: {n}, d: {dim}'    
+    )
     # get train/val/test split
+    print("Split data...")
     n_trn = int(n * 0.4)
     n_val = int(n * 0.2)
     n_tst = n - n_trn - n_val
@@ -25,8 +27,8 @@ def generate_data_split(split, seed, out_path, x):
     trn_val_mask = torch.ones(n, dtype=torch.bool)
     trn_val_mask[tst_ix] = False
 
-    # standardise
-    # print(n_trn, n_val, n_tst)
+    # standardize
+    print("Standardize data...")
     trn_val_mean = x[trn_val_mask, :].mean(axis=0)
     trn_val_std = x[trn_val_mask, :].std(axis=0)
     x = (x - trn_val_mean) / trn_val_std
@@ -34,6 +36,7 @@ def generate_data_split(split, seed, out_path, x):
     dfs = []
     pos_dfs = []
     neg_dfs = []
+    print("Estimate dfs...")
     loop = tqdm.tqdm(range(x.shape[1]))
     
     for dim_ix in loop:
@@ -59,6 +62,14 @@ def generate_data_split(split, seed, out_path, x):
             # print(f"ERR: n {dim_ix}")
             neg_dfs.append(0)
 
+    average_df = np.mean(dfs)
+    average_pos_df = np.mean(pos_dfs)
+    average_neg_df = np.mean(neg_dfs)
+
+    print(f"Average df: {average_df}")
+    print(f"Average pos df: {average_pos_df}")
+    print(f"Average neg df: {average_neg_df}")
+
     dataset = {
         "split": {"trn": trn_ix, "val": val_ix, "tst": tst_ix},
         "metadata": {
@@ -82,33 +93,18 @@ def generate_data_split(split, seed, out_path, x):
 
 
 if __name__ == "__main__":
-    import multiprocessing as mp
     from functools import partial
 
-    print('Generating for SP500...')
+    print('Generating splits + tail estimation for SP500...')
     from tailnflows.targets.data.sp500_returns import load_return_data
-    # will generate for up to dim 300
-    x, _ = load_return_data(300)
+    # will generate for up to dim top_n_symbols
+    # currently only works for up to dim 145, as the other stocks are incomplete!
+    top_n_symbols = 140
+    x, _ = load_return_data(top_n_symbols)
+    _generator_sp500 = partial(generate_data_split, out_path="splits/sp500", x=x)
 
-    _generator = partial(generate_data_split, out_path="splits/sp500", x=x)
     for split in range(10):
-        _generator(split, seed=42)
+        print(f"Preprocessing for SP500 split {split}...")
+        _generator_sp500(split, seed = 1100 + 100*split)
 
-    # print('Generating splits + tail estimation for insurance...')
-    from tailnflows.targets.data.insurance import load_data
-    x = load_data()
-    _generator = partial(generate_data_split, out_path="splits/insurance", x=x)
-    for split in range(10):
-        _generator(split, seed=42)
-
-    # print('Generating splits + tail estimation for fama5...')
-    from tailnflows.targets.data.fama5 import load_data
-    x = load_data()
-    _generator = partial(generate_data_split, out_path="splits/fama5", x=x)
-    for split in range(10):
-        _generator(split, seed=42)
-
-    # OR: 
-    # with mp.Pool(5) as pool:
-    #     # some arbitrary seq of seeds
-    #     pool.starmap(_generator, enumerate(range(1100, 2100, 100)))
+    print("Process finished successfully.")
