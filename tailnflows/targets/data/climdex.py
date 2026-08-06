@@ -14,6 +14,7 @@ def load_climdex_data():
     """
     This is replicated from the marginalTailAdaptiveFlow paper
     https://github.com/MikeLasz/marginalTailAdaptiveFlow/blob/master/utils/flows.py#L532
+    IMPORTANT: Currently always uses the same seed for random train/val/test splits!
     """
     columns = slice(0, None)
     ds_inputs = xr.open_dataset(f"{get_project_root()}/data/nwp_saf_profiles_in.nc")
@@ -25,7 +26,7 @@ def load_climdex_data():
     ds_true, stats_info = to_normalized_dataset(ds_true_in)
 
     ds_train, ds_test = train_test_split_dataset(
-        ds_true, test_size=0.6, dim="column", shuffle=True, seed=42
+        ds_true, test_size=0.6, dim="column", shuffle=True, seed=42 # pyright: ignore[reportArgumentType]
     )
     ds_test, ds_validation = train_test_split_dataset(
         ds_test, test_size=0.33334, dim="column", shuffle=True, seed=42
