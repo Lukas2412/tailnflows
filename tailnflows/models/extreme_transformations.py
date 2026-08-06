@@ -165,6 +165,16 @@ def _erfi_scipy(z: torch.Tensor) -> torch.Tensor:
     return torch.from_numpy(erfi_np).to(z.device)
 
 
+def _erfi_complex(x):
+    # erfi(x) = -i * erf(i x)
+    # Use complex path; result is real for real x (imag part ~ 0)
+    cdtype = torch.complex128 if x.dtype == torch.float64 else torch.complex64
+    ix = (1j * x.to(cdtype))
+    val = torch.special.erf(ix)
+    erfi_val = (-1j) * val
+    return erfi_val.real.to(x.dtype)
+
+
 def _erfi_inv_initial_guess(x: torch.Tensor) -> torch.Tensor:
     """
     Provide a stable initial guess for computing erfi^{-1}(x) using Halley's method.
@@ -216,9 +226,49 @@ def _erfi_inv(x: torch.Tensor, iters: int = 6) -> torch.Tensor:
     return y
 
 
+def _erfi_inv_newton(y, max_iters=8):
+    # TODO: Test if this works and is better or worse than the Halley implementation!
+    # NOTE: I don't think this is correct!
+    # Solve u such that erfi(u) = y via Newton iterations.
+    # Monotone, strictly increasing, so Newton with a decent init converges fast.
+    # Do math in float64 if input is float32 for stability.
+    orig_dtype = y.dtype
+    u = y.to(torch.float64)
+    y64 = u.clone()
+
+    # Initial guess:
+    # - small |y|: linear approx erfi(u) ~ 2/√π u => u ~ y * √π/2
+    # - large |y|: grow ~ sqrt(log(1 + c y^2))
+    small = (y64.abs() <= 1.0)
+    u0_small = y64 * math.sqrt(math.pi) / 2.0
+    u0_large = y64.sign() * torch.sqrt(torch.clamp(torch.log1p((math.pi / 4.0) * y64 * y64), min=0.0))
+    u = torch.where(small, u0_small, u0_large)
+
+    # Newton iterations with clamped step
+    # f(u) = erfi(u) - y, f'(u) = 2/√π * exp(u^2)
+    two_over_sqrt_pi = 2.0 / math.sqrt(math.pi)
+    for _ in range(max_iters):
+        f = _erfi_complex(u) - y64
+        deriv = two_over_sqrt_pi * torch.exp(u * u)
+        delta = f / deriv
+        # clamp update to avoid wild jumps
+        delta = torch.clamp(delta, min=-1.0, max=1.0)
+        u = u - delta
+
+    return u.to(orig_dtype)
+
+
 ###############################################################
 # ===== auxiliary functions for modified TTF transforms ===== #
 ###############################################################
+
+def _cbrt(x): # real-valued cubic root, sign-correct
+    return torch.sign(x) * torch.pow(torch.abs(x), x.new_tensor(1.0 / 3.0))
+
+def _const_like(x, val):
+    return x.new_tensor(val)
+
+
 
 
 def _shift_power_transform_and_lad(z, tail_param):
@@ -249,6 +299,27 @@ def _extreme_transform_and_lad(z, tail_param):
     return x, lad
 
 
+def _ttf_sym_value_and_logprime(z, lam):
+    """
+    TODO: Plot this against the original implementation for sanity!
+    R_lambda(z) and log|R_lambda'(z)| for symmetric-λ TTF with mu=0, sigma=1.
+    Equations:
+    g = erfc(|z|/√2)
+    R(z) = sign(z) * (g^(-lam)-1)/lam
+    R'(z) = g^(-lam-1) * (√2/√π) * exp(-z^2/2) (even function)
+    Uses stable expm1/log forms.
+    """
+    u = torch.abs(z)
+    g = torch.special.erfc(u / _const_like(u, math.sqrt(2.0)))
+    log_g = torch.log(g)
+    # Stable value
+    val_abs = torch.expm1(-lam * log_g) / lam # (g^(-lam)-1)/lam
+    val = torch.sign(z) * val_abs
+    # Log-derivative
+    logprime = (-lam - 1.0) * log_g - 0.5 * (u * u) + _const_like(u, 0.5 * math.log(2.0 / math.pi))
+    return val, logprime
+
+
 def _extreme_inverse_and_lad(x, tail_param):
     log_inner = torch.log1p(tail_param * x)
     log_g = -log_inner / tail_param
@@ -272,6 +343,39 @@ def _extreme_inverse_and_lad(x, tail_param):
     lad += torch.log(x.new_tensor(SQRT_PI / SQRT_2))
 
     return z, lad
+
+
+def _ttf_sym_inverse_and_logprime(x, lam):
+    """
+    TODO: Plot against original implementation for sanity!
+    Inverse z = R_lambda^{-1}(x) and log|dz/dx| for symmetric-λ TTF with mu=0, sigma=1.
+    Equations:
+    inner = 1 + lam * |x|
+    g = inner^(-1/lam)
+    z = sign(x) * √2 * erfcinv(g)
+    log|dz/dx| = (-1 - 1/lam) * log(inner) + erfcinv(g)^2 + log(√π/√2)
+    Computes erfcinv via ndtri/series (simple version here).
+    """
+    s = torch.sign(x)
+    u = torch.abs(x)
+    inner = 1.0 + lam * u
+    log_inner = torch.log1p(lam * u)
+    log_g = -log_inner / lam
+    g = torch.exp(log_g)
+
+    # Stable erfcinv using ndtri; for very small g, upcast to float64
+    def _erfcinv_from_erfc(g):
+        # erfcinv(g) = -ndtri(0.5*g) / √2
+        return -torch.special.ndtri(0.5 * g) / _const_like(g, math.sqrt(2.0))
+
+    if x.dtype == torch.float32:
+        E = _erfcinv_from_erfc(g.to(torch.float64)).to(x.dtype)
+    else:
+        E = _erfcinv_from_erfc(g)
+
+    z = s * _const_like(x, math.sqrt(2.0)) * E
+    logprime = (-1.0 - 1.0 / lam) * torch.log(inner) + (E * E) + _const_like(x, 0.5 * math.log(math.pi / 2.0))
+    return z, logprime
 
 
 def neg_extreme_transform_and_lad(z, tail_param):
@@ -559,6 +663,519 @@ def flip(transform):
         transform.forward = _inverse
 
     return transform
+
+
+
+##################################################
+# -------- Modified TTF Transformations -------- #
+##################################################
+
+# Transforming both sides
+
+def r_lin_both_forward(z, lam_pos, lam_neg, a_pos, a_neg):
+    """
+    Test and also try with original (sym) TTF implementation
+    Piecewise-linear modification with different λ on each side.
+    Returns (x, log|dx/dz|).
+    """
+    # Precompute anchors
+    Ra_minus, logRp_minus = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
+    Ra_plus, logRp_plus = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    Rp_a_minus = torch.exp(logRp_minus) # R’{λ-}(a-)
+    Rp_a_plus = torch.exp(logRp_plus) # R’{λ_+}(a_+)
+
+    # Regions
+    left = z <= a_neg
+    mid  = (z >= a_neg) & (z <= a_pos)
+    right= z >= a_pos
+
+    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
+    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    # Left: (Rλ-(z) - Rλ-(a-)) / Rλ-'(a-) + a-
+    x[left] = ((Rm_z[left] - Ra_minus) / Rp_a_minus) + a_neg
+    lad[left] = logRp_z_m[left] - logRp_minus  # log(R'(z)/R'(a-))
+
+    # Mid: identity
+    x[mid] = z[mid]
+    lad[mid] = 0.0
+
+    # Right: (Rλ+(z) - Rλ+(a+)) / Rλ+'(a+) + a+
+    x[right] = ((Rp_z[right] - Ra_plus) / Rp_a_plus) + a_pos
+    lad[right] = logRp_z_p[right] - logRp_plus
+
+    return x, lad
+
+
+def r_lin_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_lin_both_forward.
+    Returns (z, log|dz/dx|).
+    """
+    # Precompute anchors
+    Ra_minus, logRp_minus = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
+    Ra_plus, logRp_plus = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    Rp_a_minus = torch.exp(logRp_minus)
+    Rp_a_plus = torch.exp(logRp_plus)
+
+    left = x <= a_neg
+    mid  = (x >= a_neg) & (x <= a_pos)
+    right= x >= a_pos
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    # Left: Rλ-^{-1}( Rλ-(a-) + Rλ-'(a-) * (x - a-) )
+    y_left = Ra_minus + Rp_a_minus * (x[left] - a_neg)
+    z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
+    z[left] = z_left
+    lad[left] = torch.log(Rp_a_minus) + lad_left  # log(R'(a-)) + log|(R^{-1})'|
+
+    # Mid: identity
+    z[mid] = x[mid]
+    lad[mid] = 0.0
+
+    # Right: Rλ+^{-1}( Rλ+(a+) + Rλ+'(a+) * (x - a+) )
+    y_right = Ra_plus + Rp_a_plus * (x[right] - a_pos)
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    z[right] = z_right
+    lad[right] = torch.log(Rp_a_plus) + lad_right
+
+    return z, lad
+
+
+def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, t_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    erfi-smoothing modification on both sides with continuity and C1 at 0 using beta = r_-/r_+.
+    Returns (x, log|dx/dz|).
+    Inputs r±>0, t±>0, a_-<0<a_+.
+    """
+    beta_mpm = r_neg / r_pos
+
+    # Constants c_- and c_+
+    sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
+    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+
+    left_tail = z <= a_neg
+    left_mid  = (z >= a_neg) & (z <= 0)
+    right_mid = (z >= 0) & (z <= a_pos)
+    right_tail= z >= a_pos
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    # Left tail: Rλ-(z) - Rλ-(a-) + c_-
+    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
+    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
+    x[left_tail] = (Rm_z[left_tail] - Ra_minus) + c_minus
+    lad[left_tail] = logRp_z_m[left_tail]
+
+    # Left mid: (√π/2) r_- / √t_- erfi(√t_- z)
+    x[left_mid] = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_complex(torch.sqrt(t_neg) * z[left_mid])
+    lad[left_mid] = torch.log(r_neg) + (t_neg * z[left_mid] * z[left_mid])
+
+    # Right mid: beta * (√π/2) r_+ / √t_+ erfi(√t_+ z)
+    x[right_mid] = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * z[right_mid])
+    lad[right_mid] = torch.log(beta_mpm) + torch.log(r_pos) + (t_pos * z[right_mid] * z[right_mid])
+
+    # Right tail: beta * (Rλ+(z) - Rλ+(a+)) + c_+
+    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    x[right_tail] = beta_mpm * (Rp_z[right_tail] - Ra_plus) + c_plus
+    lad[right_tail] = torch.log(beta_mpm) + logRp_z_p[right_tail]
+
+    return x, lad
+
+
+def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, t_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    Inverse of r_erfi_both_forward.
+    Returns (z, log|dz/dx|).
+    """
+    beta_mpm = r_neg / r_pos
+    beta_pm = 1.0 / beta_mpm
+    sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
+
+    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+
+    left_tail = x <= c_minus
+    left_mid  = (x >= c_minus) & (x <= 0)
+    right_mid = (x >= 0) & (x <= c_plus)
+    right_tail= x >= c_plus
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    # Left tail: Rλ-^{-1}( x - c_- + Rλ-(a-) )
+    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
+    y_left = x[left_tail] - c_minus + Ra_minus
+    z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
+    z[left_tail] = z_left
+    lad[left_tail] = lad_left
+
+    # Left mid: (1/√t_-) erfi^{-1}( (2/√π) √t_-/r_- * x )
+    arg_left = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_neg) / r_neg) * x[left_mid]
+    u_left = _erfi_inv(arg_left)
+    z[left_mid] = u_left / torch.sqrt(t_neg)
+    # dz/dx = exp(-u^2) / r_-
+    lad[left_mid] = -torch.log(r_neg) - (u_left * u_left)
+
+    # Right mid: (1/√t_+) erfi^{-1}( (2/√π) √t_+/r_+ * beta_pm * x )
+    arg_right = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * (beta_pm * x[right_mid])
+    u_right = _erfi_inv(arg_right)
+    z[right_mid] = u_right / torch.sqrt(t_pos)
+    # dz/dx = beta_pm * exp(-u^2) / r_+
+    lad[right_mid] = torch.log(beta_pm) - torch.log(r_pos) - (u_right * u_right)
+
+    # Right tail: Rλ+^{-1}( beta_pm * (x - c_+) + Rλ+(a+) )
+    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    y_right = beta_pm * (x[right_tail] - c_plus) + Ra_plus
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    z[right_tail] = z_right
+    lad[right_tail] = torch.log(beta_pm) + lad_right
+
+    return z, lad
+
+
+def r_qua_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg, c2_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Quadratic-slope (cubic primitive) smoothing on both sides with C1 at 0 using beta = c0_-/c0_+.
+    Returns (x, log|dx/dz|).
+    """
+    beta_mpm = c0_neg / c0_pos
+    c_minus = (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_plus = beta_mpm * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
+
+    left_tail = z <= a_neg
+    left_mid  = (z >= a_neg) & (z <= 0)
+    right_mid = (z >= 0) & (z <= a_pos)
+    right_tail= z >= a_pos
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    # Left tail
+    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
+    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
+    x[left_tail] = (Rm_z[left_tail] - Ra_minus) + c_minus
+    lad[left_tail] = logRp_z_m[left_tail]
+
+    # Left mid: (1/3) c2^- z^3 + c0^- z
+    x[left_mid] = (1.0 / 3.0) * c2_neg * (z[left_mid] ** 3) + c0_neg * z[left_mid]
+    lad[left_mid] = torch.log(c2_neg * (z[left_mid] ** 2) + c0_neg)
+
+    # Right mid: beta * ((1/3) c2^+ z^3 + c0^+ z)
+    x[right_mid] = beta_mpm * ((1.0 / 3.0) * c2_pos * (z[right_mid] ** 3) + c0_pos * z[right_mid])
+    lad[right_mid] = torch.log(beta_mpm) + torch.log(c2_pos * (z[right_mid] ** 2) + c0_pos)
+
+    # Right tail
+    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    x[right_tail] = beta_mpm * (Rp_z[right_tail] - Ra_plus) + c_plus
+    lad[right_tail] = torch.log(beta_mpm) + logRp_z_p[right_tail]
+
+    return x, lad
+
+
+def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg, c2_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_qua_both_forward.
+    Returns (z, log|dz/dx|).
+    """
+    beta_mpm = c0_neg / c0_pos
+    beta_pm = 1.0 / beta_mpm
+    c_minus = (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_plus = beta_mpm * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
+
+    left_tail = x <= c_minus
+    left_mid  = (x >= c_minus) & (x <= 0)
+    right_mid = (x >= 0) & (x <= c_plus)
+    right_tail= x >= c_plus
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    # Left tail: Rλ-^{-1}(x - c_- + Rλ-(a-))
+    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
+    y_left = x[left_tail] - c_minus + Ra_minus
+    z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
+    z[left_tail] = z_left
+    lad[left_tail] = lad_left
+
+    # Left mid: Cardano with p = 3 c0^- / c2^-, q = -3 x / c2^-
+    pL = (3.0 * c0_neg) / c2_neg
+    qL = -3.0 * x[left_mid] / c2_neg
+    deltaL = (qL / 2.0) ** 2 + (pL / 3.0) ** 3
+    zL = _cbrt(-qL / 2.0 + torch.sqrt(deltaL)) + _cbrt(-qL / 2.0 - torch.sqrt(deltaL))
+    z[left_mid] = zL
+    lad[left_mid] = -torch.log(c2_neg * (zL ** 2) + c0_neg)
+
+    # Right mid: Cardano with p = 3 c0^+ / c2^+, q = -3 beta_pm x / c2^+
+    pR = (3.0 * c0_pos) / c2_pos
+    qR = -3.0 * (beta_pm * x[right_mid]) / c2_pos
+    deltaR = (qR / 2.0) ** 2 + (pR / 3.0) ** 3
+    zR = _cbrt(-qR / 2.0 + torch.sqrt(deltaR)) + _cbrt(-qR / 2.0 - torch.sqrt(deltaR))
+    z[right_mid] = zR
+    lad[right_mid] = torch.log(beta_pm) - torch.log(c2_pos * (zR ** 2) + c0_pos)
+
+    # Right tail: Rλ+^{-1}( beta_pm * (x - c_+) + Rλ+(a+) )
+    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    y_right = beta_pm * (x[right_tail] - c_plus) + Ra_plus
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    z[right_tail] = z_right
+    lad[right_tail] = torch.log(beta_pm) + lad_right
+
+    return z, lad
+
+
+# Transforming only the right tail
+# TODO: Think about how to handle left tails!
+
+def r_one_forward(z, lam_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Transform only the right tail with basic TTF; left side is linear with slope sqrt(2/pi).
+    Returns (x, log|dx/dz|).
+    """
+    slope = _const_like(z, math.sqrt(2.0 / math.pi))
+    left = z <= 0
+    right = z >= 0
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    x[left] = slope * z[left]
+    lad[left] = torch.log(slope)
+
+    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+    x[right] = Rp_z[right]
+    lad[right] = logRp_z_p[right]
+
+    return x, lad
+
+
+def r_one_inverse(x, lam_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_one_forward.
+    Returns (z, log|dz/dx|).
+    """
+    slope_inv = _const_like(x, math.sqrt(math.pi / 2.0))
+    left = x <= 0
+    right = x >= 0
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    z[left] = slope_inv * x[left]
+    lad[left] = torch.log(slope_inv)
+
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(x[right], lam_pos)
+    z[right] = z_right
+    lad[right] = lad_right
+
+    return z, lad
+
+
+def r_lin_one_forward(z, lam_pos, a_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Piecewise-linear modification transforming only the right tail.
+    Returns (x, log|dx/dz|).
+    """
+    Rp_a, logRp_a = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    Rp_a_val = torch.exp(logRp_a)
+
+    left = z <= a_pos
+    right= z >= a_pos
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    x[left] = z[left]
+    lad[left] = 0.0
+
+    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
+    x[right] = ((Rp_z[right] - Rp_a) / Rp_a_val) + a_pos
+    lad[right] = logRp_z[right] - logRp_a
+
+    return x, lad
+
+
+def r_lin_one_inverse(x, lam_pos, a_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_lin_one_forward.
+    Returns (z, log|dz/dx|).
+    """
+    Rp_a, logRp_a = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    Rp_a_val = torch.exp(logRp_a)
+
+    left = x <= a_pos
+    right= x >= a_pos
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    z[left] = x[left]
+    lad[left] = 0.0
+
+    y = Rp_a + Rp_a_val * (x[right] - a_pos)
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
+    z[right] = z_right
+    lad[right] = torch.log(Rp_a_val) + lad_right
+
+    return z, lad
+
+
+def r_erfi_one_forward(z, lam_pos, a_pos, r_pos, t_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    erfi-smoothing transforming only the right tail; left side is linear with slope r_+ for C1 at 0.
+    Returns (x, log|dx/dz|).
+    """
+    sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+
+    left = z <= 0
+    mid  = (z >= 0) & (z <= a_pos)
+    right= z >= a_pos
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    # Left: r_+ z
+    x[left] = r_pos * z[left]
+    lad[left] = torch.log(r_pos)
+
+    # Mid: (√π/2) r_+ / √t_+ erfi(√t_+ z)
+    x[mid] = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * z[mid])
+    lad[mid] = torch.log(r_pos) + (t_pos * z[mid] * z[mid])
+
+    # Right: Rλ+(z) - Rλ+(a+) + c_+
+    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
+    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    x[right] = (Rp_z[right] - Rp_a) + c_plus
+    lad[right] = logRp_z[right]
+
+    return x, lad
+
+
+def r_erfi_one_inverse(x, lam_pos, a_pos, r_pos, t_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    Inverse of r_erfi_one_forward.
+    Returns (z, log|dz/dx|).
+    """
+    sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+
+    left = x <= 0
+    mid  = (x >= 0) & (x <= c_plus)
+    right= x >= c_plus
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    # Left: x / r_+
+    z[left] = x[left] / r_pos
+    lad[left] = -torch.log(r_pos)
+
+    # Mid: (1/√t_+) erfi^{-1}( (2/√π) √t_+/r_+ x )
+    arg = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * x[mid]
+    u = _erfi_inv(arg)
+    z[mid] = u / torch.sqrt(t_pos)
+    lad[mid] = -torch.log(r_pos) - (u * u)  # dz/dx = exp(-u^2)/r_+
+
+    # Right: Rλ+^{-1}( x - c_+ + Rλ+(a+) )
+    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    y = x[right] - c_plus + Rp_a
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
+    z[right] = z_right
+    lad[right] = lad_right
+
+    return z, lad
+
+
+def r_qua_one_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Quadratic-slope smoothing transforming only the right tail; left side has slope c0^+ for C1 at 0.
+    Returns (x, log|dx/dz|).
+    """
+    c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
+
+    left = z <= 0
+    mid  = (z >= 0) & (z <= a_pos)
+    right= z >= a_pos
+
+    x = torch.empty_like(z)
+    lad = torch.empty_like(z)
+
+    # Left: c0^+ z
+    x[left] = c0_pos * z[left]
+    lad[left] = torch.log(c0_pos)
+
+    # Mid: (1/3) c2^+ z^3 + c0^+ z
+    x[mid] = (1.0 / 3.0) * c2_pos * (z[mid] ** 3) + c0_pos * z[mid]
+    lad[mid] = torch.log(c2_pos * (z[mid] ** 2) + c0_pos)
+
+    # Right: Rλ+(z) - Rλ+(a+) + c_+
+    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
+    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
+    x[right] = (Rp_z[right] - Rp_a) + c_plus
+    lad[right] = logRp_z[right]
+
+    return x, lad
+
+
+def r_qua_one_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_qua_one_forward.
+    Returns (z, log|dz/dx|).
+    """
+    c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
+
+    left = x <= 0
+    mid  = (x >= 0) & (x <= c_plus)
+    right= x >= c_plus
+
+    z = torch.empty_like(x)
+    lad = torch.empty_like(x)
+
+    # Left: x / c0^+
+    z[left] = x[left] / c0_pos
+    lad[left] = -torch.log(c0_pos)
+
+    # Mid: Cardano with p = 3 c0^+ / c2^+, q = -3 x / c2^+
+    p = (3.0 * c0_pos) / c2_pos
+    q = -3.0 * x[mid] / c2_pos
+    delta = (q / 2.0) ** 2 + (p / 3.0) ** 3
+    zM = _cbrt(-q / 2.0 + torch.sqrt(delta)) + _cbrt(-q / 2.0 - torch.sqrt(delta))
+    z[mid] = zM
+    lad[mid] = -torch.log(c2_pos * (zM ** 2) + c0_pos)
+
+    # Right: Rλ+^{-1}( x - c_+ + Rλ+(a+) )
+    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    y = x[right] - c_plus + Rp_a
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
+    z[right] = z_right
+    lad[right] = lad_right
+
+    return z, lad
+
+
 
 
 class TailMarginalTransform(Transform):
