@@ -1046,10 +1046,9 @@ def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
     return z, lad
 
 
-# Transforming only the right tail
-# TODO: Think about how to handle left tails!
+# Transforming only one side
 
-def r_one_forward(z, lam_pos):
+def r_right_forward(z, lam_pos):
     """
     TODO: Test and also try with original (sym) TTF implementation
     Transform only the right tail with basic TTF; left side is linear with slope sqrt(2/pi).
@@ -1072,10 +1071,20 @@ def r_one_forward(z, lam_pos):
     return x, lad
 
 
-def r_one_inverse(x, lam_pos):
+def r_left_forward(z, lam_neg):
     """
     TODO: Test and also try with original (sym) TTF implementation
-    Inverse of r_one_forward.
+    Transform only the left tail with basic TTF; right side is linear with slope sqrt(2/pi).
+    Returns (x, log|dx/dz|).
+    """
+    val_at_minus_z, lad_at_minus_z = r_right_forward(-z, lam_neg)
+    return - val_at_minus_z, lad_at_minus_z
+
+
+def r_right_inverse(x, lam_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_right_forward.
     Returns (z, log|dz/dx|).
     """
     slope_inv = _const_like(x, math.sqrt(math.pi / 2.0))
@@ -1095,7 +1104,17 @@ def r_one_inverse(x, lam_pos):
     return z, lad
 
 
-def r_lin_one_forward(z, lam_pos, a_pos):
+def r_left_inverse(x, lam_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_left_forward.
+    Returns (z, log|dz/dx|).
+    """
+    val_at_minus_x, lad_at_minus_x = r_right_inverse(-x, lam_neg)
+    return - val_at_minus_x, lad_at_minus_x
+
+
+def r_lin_right_forward(z, lam_pos, a_pos):
     """
     TODO: Test and also try with original (sym) TTF implementation
     Piecewise-linear modification transforming only the right tail.
@@ -1120,10 +1139,21 @@ def r_lin_one_forward(z, lam_pos, a_pos):
     return x, lad
 
 
-def r_lin_one_inverse(x, lam_pos, a_pos):
+def r_lin_left_forward(z, lam_neg, a_neg):
     """
     TODO: Test and also try with original (sym) TTF implementation
-    Inverse of r_lin_one_forward.
+    Piecewise-linear modification transforming only the left tail.
+    Returns (x, log|dx/dz|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    val_at_minus_z, lad_at_minus_z = r_lin_right_forward(-z, lam_neg, -a_neg)
+    return - val_at_minus_z, lad_at_minus_z
+
+
+def r_lin_right_inverse(x, lam_pos, a_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_lin_right_forward.
     Returns (z, log|dz/dx|).
     """
     Rp_a, logRp_a = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
@@ -1146,10 +1176,22 @@ def r_lin_one_inverse(x, lam_pos, a_pos):
     return z, lad
 
 
-def r_erfi_one_forward(z, lam_pos, a_pos, r_pos, t_pos):
+def r_lin_left_inverse(x, lam_neg, a_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_lin_left_forward.
+    Returns (z, log|dz/dx|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    val_at_minus_x, lad_at_minus_x = r_lin_right_inverse(-x, lam_neg, -a_neg)
+    return - val_at_minus_x, lad_at_minus_x
+
+
+
+def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     """
     TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
-    erfi-smoothing transforming only the right tail; left side is linear with slope r_+ for C1 at 0.
+    erfi-smoothing transforming only the right tail; left side is linear with slope r_+ for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
@@ -1179,10 +1221,22 @@ def r_erfi_one_forward(z, lam_pos, a_pos, r_pos, t_pos):
     return x, lad
 
 
-def r_erfi_one_inverse(x, lam_pos, a_pos, r_pos, t_pos):
+def r_erfi_left_forward(z, lam_neg, a_neg, r_neg, t_neg):
     """
     TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
-    Inverse of r_erfi_one_forward.
+    erfi-smoothing transforming only the left tail; righ side is linear with slope r_- for being C1 at 0.
+    Returns (x, log|dx/dz|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    assert r_neg > 0 and t_neg > 0, "r_neg and t_neg must be positive!"
+    val_at_minus_z, lad_at_minus_z = r_erfi_right_forward(-z, lam_neg, -a_neg, r_neg, t_neg)
+    return - val_at_minus_z, lad_at_minus_z
+
+
+def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    Inverse of r_erfi_right_forward.
     Returns (z, log|dz/dx|).
     """
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
@@ -1215,10 +1269,22 @@ def r_erfi_one_inverse(x, lam_pos, a_pos, r_pos, t_pos):
     return z, lad
 
 
-def r_qua_one_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
+def r_erfi_left_inverse(x, lam_neg, a_neg, r_neg, t_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
+    Inverse of r_erfi_left_forward.
+    Returns (z, log|dz/dx|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    assert r_neg > 0 and t_neg > 0, "r_neg and t_neg must be positive!"
+    val_at_minus_x, lad_at_minus_x = r_erfi_right_inverse(-x, lam_neg, -a_neg, r_neg, t_neg)
+    return - val_at_minus_x, lad_at_minus_x
+
+
+def r_qua_right_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
     """
     TODO: Test and also try with original (sym) TTF implementation
-    Quadratic-slope smoothing transforming only the right tail; left side has slope c0^+ for C1 at 0.
+    Quadratic-slope smoothing transforming only the right tail; left side has slope c0^+ for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
     c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
@@ -1247,10 +1313,22 @@ def r_qua_one_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
     return x, lad
 
 
-def r_qua_one_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
+def r_qua_left_forward(z, lam_neg, a_neg, c0_neg, c2_neg):
     """
     TODO: Test and also try with original (sym) TTF implementation
-    Inverse of r_qua_one_forward.
+    Quadratic-slope smoothing transforming only the left tail; right side has slope c0^- for being C1 at 0.
+    Returns (x, log|dx/dz|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    assert c0_neg > 0 and c2_neg > 0, "c0_neg and c2_neg must be positive!"
+    val_at_minus_z, lad_at_minus_z = r_qua_right_forward(-z, lam_neg, -a_neg, c0_neg, c2_neg)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def r_qua_right_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_qua_right_forward.
     Returns (z, log|dz/dx|).
     """
     c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
@@ -1283,6 +1361,23 @@ def r_qua_one_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
 
     return z, lad
 
+
+def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
+    """
+    TODO: Test and also try with original (sym) TTF implementation
+    Inverse of r_qua_right_forward.
+    Returns (z, log|dz/dx|).
+    """
+    assert a_neg <= 0.0, "a_neg must be negative!"
+    assert c0_neg > 0 and c2_neg > 0, "c0_neg and c2_neg must be positive!"
+    val_at_minus_x, lad_at_minus_x = r_qua_right_inverse(-x, lam_neg, -a_neg, c0_neg, c2_neg)
+    return -val_at_minus_x, lad_at_minus_x
+
+
+
+####################################################################
+# ----- Transformation classes implementing the above trafos ----- #
+####################################################################
 
 
 
@@ -1441,6 +1536,8 @@ class RQSMarginalTransform(Transform):
 
 
 class TailAffineMarginalTransform(Transform):
+    # TODO: Wrap modified TTF transformations here and test!
+    # NOTE: Remember that the modified TTF versions were implemented without shift and scale, so these parameters must be implemented here!
     def __init__(
         self,
         features,
