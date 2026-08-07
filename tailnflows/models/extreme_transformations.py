@@ -265,8 +265,116 @@ def _erfi_inv_newton(y, max_iters=8):
 def _cbrt(x): # real-valued cubic root, sign-correct
     return torch.sign(x) * torch.pow(torch.abs(x), x.new_tensor(1.0 / 3.0))
 
+
 def _const_like(x, val):
     return x.new_tensor(val)
+
+
+def _compute_rt(a: torch.Tensor, tail_param: torch.Tensor, scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes parameters r and t for erfi modified TTF transformation (on pos side).
+
+    Args:
+        a (torch.Tensor): positive parameter defining the range (on pos side) for erfi transformations for each marginal (shape: [features])
+        tail_param (torch.Tensor): tail parameters (on pos side) for each marginal (shape: [features])
+        scale (torch.Tensor): scale parameters for each marginal (shape: [features])
+
+    Returns:
+        (tuple): containing:
+            r (torch.Tensor): r parameters (on pos side) for each marginal (shape: [features])
+            t (torch.Tensor): t parameters (on pos side) for each marginal (shape: [features])
+    """
+    b = scale * SQRT_2/SQRT_PI * torch.exp(-a*a/2) * torch.pow(torch.erfc(torch.abs(a) / SQRT_2), -(tail_param+1))
+    c = b * (-a + (tail_param+1) * SQRT_2/SQRT_PI * torch.exp(-a*a/2) * torch.pow(torch.erfc(a/SQRT_2), -1))
+    t = c / (2*a*b)
+    r = b * torch.exp(-c*a/(2*b))
+
+    return r, t
+
+
+def compute_c2_c0(a: torch.Tensor, tail_param: torch.Tensor, scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes parameters c2 and c0 for quadratic-slope modified TTF transformation.
+
+    Args:
+        a (torch.Tensor): positive parameter defining the range (on pos side) for quadratic-slope transformations for each marginal (shape: [features])
+        tail_param (torch.Tensor): tail parameters (on pos side) for each marginal (shape: [features])
+        scale (torch.Tensor): scale parameters for each marginal (shape: [features])
+
+    Returns:
+        (tuple): containing:
+            c2 (torch.Tensor): c2 parameters (on pos side) for each marginal (shape: [features])
+            c0 (torch.Tensor): c0 parameters (on pos side) for each marginal (shape: [features])
+    """
+    b = scale * SQRT_2/SQRT_PI * torch.exp(-a*a/2) * torch.pow(torch.erfc(torch.abs(a) / SQRT_2), -(tail_param+1))
+    c = b * (-a + (tail_param+1) * SQRT_2/SQRT_PI * torch.exp(-a*a/2) * torch.pow(torch.erfc(a/SQRT_2), -1))
+    c2 = c / (2*a)
+    c0 = b - c2 * a * a
+
+    return c2, c0
+
+
+def r_prime_np(x: np.ndarray, tail_param: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """
+    Derivative of the (scalar) TTF transformation at x for given tail_param and scale (numpy version).
+
+    Args:
+        x (np.ndarray): input value
+        tail_param (np.ndarray): tail parameter
+        scale (np.ndarray): scale parameter
+
+    Returns:
+        np.ndarray: derivative value at x
+    """
+    return scale * np.sqrt(2/np.pi) * np.exp(-x**2/2) * (scipy.special.erfc(np.abs(x) / np.sqrt(2)))**(-tail_param - 1)
+
+
+def r_pp_np(x: np.ndarray, tail_param: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """
+    Second derivative of the (scalar) TTF transformation at x for given tail_param and scale (numpy version).
+
+    Args:
+        x (np.ndarray): input value
+        tail_param (np.ndarray): tail parameter
+        scale (np.ndarray): scale parameter
+
+    Returns:
+        np.ndarray: second derivative value at x
+    """
+    return r_prime_np(x, tail_param, scale) * ( -x + (tail_param + 1) * np.sign(x) * np.sqrt(2/np.pi) * np.exp(-x**2/2) * (scipy.special.erfc(np.abs(x) / np.sqrt(2)))**(-1) )
+
+
+def compute_a(tail_param: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """
+    Computes 'a' parameters (on pos side) for each marginal for quadratic-slope TTF transformation from tail parameters using a numerical solver.
+
+    Args:
+        tail_param (np.ndarray): tail parameters (on pos side) for each marginal (shape: [features])
+        scale (np.ndarray): scale parameters for each marginal (shape: [features])
+
+    Returns:
+        a_values (np.ndarray): computed 'a' parameters (on pos side) for each marginal (shape: [features])
+    """
+    a_min = 0.1 # minimum value for 'a' if numerical solver fails, should be decent with tail_param in (0,5)
+    
+    a_values = np.zeros_like(tail_param)
+    for i in range(len(tail_param)):
+        if not np.isnan(tail_param[i]): # computation only needed for heavy-tailed marginals
+            # Use root_scalar to find the root of K(x) = 0
+            sol = scipy.optimize.root_scalar(
+                lambda x: np.sign(x) * (2 * (r_prime_np(x, tail_param[i], scale[i]) - 1) / r_pp_np(x, tail_param[i], scale[i]) - x),
+                method = 'secant',
+                x0 = 1.0,
+                x1 = 5.0,
+            )
+            if sol.converged and sol.root > 0:
+                a_values[i] = sol.root
+            else:
+                print(f"WARNING: Numerical solver for 'a' did not converge for tail_param={tail_param[i]}, scale={scale[i]}. Setting 'a' to minimum value {a_min}.")
+                a_values[i] = a_min
+    
+    return a_values
+
 
 
 
