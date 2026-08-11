@@ -4,7 +4,7 @@ from nflows.transforms.autoregressive import AutoregressiveTransform
 from nflows.transforms import made as made_module
 from nflows.transforms import Transform
 from tailnflows.models.utils import inv_sftplus, inv_sigmoid
-from typing import TypedDict, Optional, Callable
+from typing import TypedDict, Optional, Callable, Union, Tuple
 import math
 import numpy as np
 import scipy
@@ -173,17 +173,35 @@ def _stable_erfcinv(x, log_x):
 
 
 # complex erf implementation
-erf_complex = ERF_1994(128)
+_erf_complex = ERF_1994(128)
+
+class Erfi_Via_Complex_Autograd(torch.autograd.Function):
+    """
+    Autograd-compatible implementation of erfi using erfi(z) = -i * erf(iz)
+    """
+
+    @staticmethod
+    def forward(ctx, z):
+        # Save the input for the backward pass
+        ctx.save_for_backward(z)
+        # Compute the forward pass
+        cdtype = torch.complex128 if z.dtype == torch.float64 else torch.complex64
+        iz = (1j * z.to(cdtype))
+        val = _erf_complex.to(device=z.device)(iz)
+        erfi_val = (-1j) * val
+        return erfi_val.real.to(z.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        z, = ctx.saved_tensors
+        # Compute the gradient (derivative of the erfi function)
+        grad_input = grad_output * (2 / _const_like(z, SQRT_PI)) * torch.exp(z**2)
+        return grad_input
 
 
-def _erfi_complex(x):
-    # erfi(x) = -i * erf(i x)
-    # Use complex path; result is real for real x (imag part ~ 0)
-    cdtype = torch.complex128 if x.dtype == torch.float64 else torch.complex64
-    ix = (1j * x.to(cdtype))
-    val = erf_complex(ix)
-    erfi_val = (-1j) * val
-    return erfi_val.real.to(x.dtype)
+# Create an instance of the function
+def _erfi_via_complex(z: torch.Tensor) -> torch.Tensor:
+    return Erfi_Via_Complex_Autograd.apply(z) # type: ignore
 
 
 def _erfi_inv_initial_guess(x: torch.Tensor) -> torch.Tensor:
@@ -227,7 +245,7 @@ def _erfi_inv(x: torch.Tensor, iters: int = 6) -> torch.Tensor:
     y64 = _erfi_inv_initial_guess(x64).clone()
 
     for _ in range(iters):
-        f = _erfi_complex(y64) - x64                   # f(y)
+        f = _erfi_via_complex(y64) - x64                   # f(y)
         fp = 2.0 / SQRT_PI * torch.exp(y64 * y64)    # f'(y)
         fpp = 2.0 * y64 * fp                         # f''(y)
 
@@ -907,8 +925,8 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
     c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
     c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
-    c_minus *= _erfi_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus  *= _erfi_complex(torch.sqrt(t_pos) * a_pos)
+    c_minus *= _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus *= _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
     left_tail = z <= a_neg
     left_mid  = (z >= a_neg) & (z <= 0)
@@ -926,12 +944,12 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
     # Left mid: (√π/2) r_- / √t_- erfi(√t_- z)
     x[left_mid] = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
-    x[left_mid] *= _erfi_complex(torch.sqrt(t_neg) * z[left_mid])
+    x[left_mid] *= _erfi_via_complex(torch.sqrt(t_neg) * z[left_mid])
     lad[left_mid] = torch.log(r_neg) + (t_neg * z[left_mid] * z[left_mid])
 
     # Right mid: beta * (√π/2) r_+ / √t_+ erfi(√t_+ z)
     x[right_mid] = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
-    x[right_mid] *= _erfi_complex(torch.sqrt(t_pos) * z[right_mid])
+    x[right_mid] *= _erfi_via_complex(torch.sqrt(t_pos) * z[right_mid])
     lad[right_mid] = torch.log(beta_mpm) + torch.log(r_pos) + (t_pos * z[right_mid] * z[right_mid])
 
     # Right tail: beta * (Rλ+(z) - Rλ+(a+)) + c_+
@@ -961,8 +979,8 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
     beta_pm = 1.0 / beta_mpm
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
 
-    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
     left_tail = x <= c_minus
     left_mid  = (x >= c_minus) & (x <= 0)
@@ -1275,7 +1293,7 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     assert torch.all(r_pos > 0)
     assert torch.all(t_pos > 0)
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
-    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
     left = z <= 0
     mid  = (z >= 0) & (z <= a_pos)
@@ -1289,7 +1307,7 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     lad[left] = torch.log(r_pos)
 
     # Mid: (√π/2) r_+ / √t_+ erfi(√t_+ z)
-    x[mid] = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * z[mid])
+    x[mid] = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * z[mid])
     lad[mid] = torch.log(r_pos) + (t_pos * z[mid] * z[mid])
 
     # Right: Rλ+(z) - Rλ+(a+) + c_+
@@ -1326,7 +1344,7 @@ def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
     assert torch.all(r_pos > 0)
     assert torch.all(t_pos > 0)
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
-    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_complex(torch.sqrt(t_pos) * a_pos)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
     left = x <= 0
     mid  = (x >= 0) & (x <= c_plus)
