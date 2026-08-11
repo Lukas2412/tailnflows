@@ -31,7 +31,6 @@ from tailnflows.models.extreme_transformations import (
     NNKwargs,
     TailAffineMarginalTransform,
     InterpMarginalTransform,
-    MaskedExtremeAutoregressiveTransform,
     MaskedAutoregressiveTailAffineMarginalTransform,
     TailScaleShiftMarginalTransform,
     SmoothTailSwitchMarginalTransform,
@@ -286,7 +285,7 @@ def base_nsf_transform(
     if affine_autoreg_layer or constrained_affine_autoreg_layer:
         
         if affine_autoreg_layer:
-            constrain = None
+            constrain = None # type: ignore
         elif constrained_affine_autoreg_layer:
             def constrain(unc_scale):
                 return 1e-6 + torch.nn.functional.sigmoid(unc_scale) * 2 
@@ -526,36 +525,6 @@ def build_ttf_m(
             neg_tail_init is not None
         ), "Fixing tails, but no init provided for neg tails"
         tail_transform.fix_tails()
-
-    # the tail transformation needs to be flipped this means data->noise is
-    # a strictly lightening transformation
-    tail_transform = flip(tail_transform)
-
-    return ExperimentFlow(
-        use=use,
-        base_distribution=base_distribution,
-        base_transformation_init=base_transformation_init,
-        final_transformation=tail_transform,
-        final_rotation=final_rotation,
-        constraint_transformation=constraint_transformation,
-    )
-
-def build_ttf_autoreg(
-    dim: int,
-    use: ModelUse = "density_estimation",
-    base_transformation_init: Optional[BaseTransform] = None,
-    constraint_transformation: Optional[Transform] = None,
-    final_rotation: FinalRotation = None,
-    model_kwargs: ModelKwargs = {},
-    nn_kwargs: NNKwargs = {},
-):
-    # base distribution
-    base_distribution = StandardNormal([dim])
-
-    # set up tail transform
-    tail_transform = MaskedExtremeAutoregressiveTransform(
-        features=dim, nn_kwargs=configure_nn(nn_kwargs)
-    )
 
     # the tail transformation needs to be flipped this means data->noise is
     # a strictly lightening transformation
