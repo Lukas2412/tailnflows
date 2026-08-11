@@ -1873,7 +1873,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
         else:
             # transform only in heavy-tailed directions by using boolean masks and the appropriate functions
-            val = z.detach().clone()
+            val = z.clone()
             lad = torch.zeros_like(z)
 
             mask_lh_batch = self.mask_lh.expand_as(z)
@@ -1893,7 +1893,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
                 val[mask_lh_batch], lad[mask_lh_batch] = r_erfi_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
                 val[mask_hl_batch], lad[mask_hl_batch] = r_erfi_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_erfi_both_forward(z[mask_hh_batch], self.pos_tail[mask_hh_batch], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                val[mask_hh_batch], lad[mask_hh_batch] = r_erfi_both_forward(z[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
                 val[mask_lh_batch], lad[mask_lh_batch] = r_qua_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
                 val[mask_hl_batch], lad[mask_hl_batch] = r_qua_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
