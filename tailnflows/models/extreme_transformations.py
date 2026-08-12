@@ -823,7 +823,6 @@ def r_both_inverse(x, lam_pos, lam_neg):
 
 def r_lin_both_forward(z, lam_pos, lam_neg, a_pos, a_neg):
     """
-    TODO! Test and also try with original (sym) TTF implementation
     Piecewise-linear modification with different λ on each side.
     Returns (x, log|dx/dz|).
     """
@@ -864,7 +863,6 @@ def r_lin_both_forward(z, lam_pos, lam_neg, a_pos, a_neg):
 
 def r_lin_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_lin_both_forward.
     Returns (z, log|dz/dx|).
     """
@@ -906,7 +904,6 @@ def r_lin_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg):
 
 def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, t_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     erfi-smoothing modification on both sides with continuity and C1 at 0 using beta = r_-/r_+.
     Returns (x, log|dx/dz|).
     Inputs r±>0, t±>0, a_-<0<a_+.
@@ -963,7 +960,6 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
 def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, t_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     Inverse of r_erfi_both_forward.
     Returns (z, log|dz/dx|).
     """
@@ -975,12 +971,25 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
     assert torch.all(r_pos > 0)
     assert torch.all(t_neg > 0)
     assert torch.all(t_pos > 0)
+
     beta_mpm = r_neg / r_pos
     beta_pm = 1.0 / beta_mpm
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
 
     c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
     c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+
+    print("x.shape: ", x.shape)
+    print("lam_pos.shape: ", lam_pos.shape)
+    print("lam_neg.shape: ", lam_neg.shape)
+    print("a_pos.shape: ", a_pos.shape)
+    print("a_neg.shape: ", a_neg.shape)
+    print("r_pos.shape: ", r_pos.shape)
+    print("r_neg.shape: ", r_neg.shape)
+    print("t_pos.shape: ", t_pos.shape)
+    print("t_neg.shape: ", t_neg.shape)
+    print("c_minus.shape: ", c_minus.shape)
+    print("c_plus.shape: ", c_plus.shape)
 
     left_tail = x <= c_minus
     left_mid  = (x >= c_minus) & (x <= 0)
@@ -992,6 +1001,10 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
     # Left tail: Rλ-^{-1}( x - c_- + Rλ-(a-) )
     Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
+    print("left_tail.shape: ", left_tail.shape)
+    print("x[left_tail].shape: ", x[left_tail].shape)
+    print("c_minus.shape: ", c_minus.shape)
+    print("Ra_minus.shape: ", Ra_minus.shape)
     y_left = x[left_tail] - c_minus + Ra_minus
     z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
     z[left_tail] = z_left
@@ -1023,7 +1036,6 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
 def r_qua_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg, c2_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Quadratic-slope (cubic primitive) smoothing on both sides with C1 at 0 using beta = c0_-/c0_+.
     Returns (x, log|dx/dz|).
     """
@@ -1072,7 +1084,6 @@ def r_qua_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
 
 def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg, c2_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_qua_both_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1134,7 +1145,6 @@ def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
 
 def r_right_forward(z, lam_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Transform only the right tail with basic TTF; left side is linear with slope sqrt(2/pi).
     Returns (x, log|dx/dz|).
     """
@@ -1158,7 +1168,6 @@ def r_right_forward(z, lam_pos):
 
 def r_left_forward(z, lam_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Transform only the left tail with basic TTF; right side is linear with slope sqrt(2/pi).
     Returns (x, log|dx/dz|).
     """
@@ -1169,7 +1178,6 @@ def r_left_forward(z, lam_neg):
 
 def r_right_inverse(x, lam_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_right_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1193,7 +1201,6 @@ def r_right_inverse(x, lam_pos):
 
 def r_left_inverse(x, lam_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_left_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1204,7 +1211,6 @@ def r_left_inverse(x, lam_neg):
 
 def r_lin_right_forward(z, lam_pos, a_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Piecewise-linear modification transforming only the right tail.
     Returns (x, log|dx/dz|).
     """
@@ -1231,7 +1237,6 @@ def r_lin_right_forward(z, lam_pos, a_pos):
 
 def r_lin_left_forward(z, lam_neg, a_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Piecewise-linear modification transforming only the left tail.
     Returns (x, log|dx/dz|).
     """
@@ -1243,7 +1248,6 @@ def r_lin_left_forward(z, lam_neg, a_neg):
 
 def r_lin_right_inverse(x, lam_pos, a_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_lin_right_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1271,7 +1275,6 @@ def r_lin_right_inverse(x, lam_pos, a_pos):
 
 def r_lin_left_inverse(x, lam_neg, a_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_lin_left_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1284,7 +1287,6 @@ def r_lin_left_inverse(x, lam_neg, a_neg):
 
 def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     erfi-smoothing transforming only the right tail; left side is linear with slope r_+ for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
@@ -1321,7 +1323,6 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
 
 def r_erfi_left_forward(z, lam_neg, a_neg, r_neg, t_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     erfi-smoothing transforming only the left tail; righ side is linear with slope r_- for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
@@ -1335,7 +1336,6 @@ def r_erfi_left_forward(z, lam_neg, a_neg, r_neg, t_neg):
 
 def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     Inverse of r_erfi_right_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1375,7 +1375,6 @@ def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
 
 def r_erfi_left_inverse(x, lam_neg, a_neg, r_neg, t_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation and original erfi implementation
     Inverse of r_erfi_left_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1389,7 +1388,6 @@ def r_erfi_left_inverse(x, lam_neg, a_neg, r_neg, t_neg):
 
 def r_qua_right_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Quadratic-slope smoothing transforming only the right tail; left side has slope c0^+ for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
@@ -1425,7 +1423,6 @@ def r_qua_right_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
 
 def r_qua_left_forward(z, lam_neg, a_neg, c0_neg, c2_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Quadratic-slope smoothing transforming only the left tail; right side has slope c0^- for being C1 at 0.
     Returns (x, log|dx/dz|).
     """
@@ -1439,7 +1436,6 @@ def r_qua_left_forward(z, lam_neg, a_neg, c0_neg, c2_neg):
 
 def r_qua_right_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_qua_right_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1480,7 +1476,6 @@ def r_qua_right_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
 
 def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
     """
-    TODO: Test and also try with original (sym) TTF implementation
     Inverse of r_qua_right_forward.
     Returns (z, log|dz/dx|).
     """
@@ -1665,8 +1660,6 @@ class TailAffineMarginalTransform(Transform):
     """
     Implement marginal TTF layer (with loc and scale)
     """
-    # TODO: Wrap modified TTF transformations here and test!
-    # NOTE: Remember that the modified TTF versions were implemented without shift and scale, so these parameters must be implemented here!
     def __init__(
         self,
         features,
@@ -1758,13 +1751,17 @@ class ModifiedTailAffineMarginalTransform(Transform):
     ):
         """
         Build a marginal TTF layer.
-        Inputs:
-            - pos_tail_init, neg_tail_init: tailparams for each marginal for pos and neg directions. Light-tailed directions are marked by the value 0 (which is in accordance with the GPD definition).
-            - fix: Whether to fix tailparams (TTFfix) or not (TTF)
-            - hd_only: If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3, like in the TTF paper.
-            - mod: Which TTF modification to use ("std" refers to standard TTF trafo). Must be in ["std", "lin", "erfi", "qua"].
-            - a_pos: Positive breaking points for each marginal.
-            - a_neg: Negative breaking points for each marginal.
+        Args:
+            features (int):
+            pos_tail_init (torch.Tensor): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            neg_tail_init (torch.Tensor): tailparams for each marginal transformation for neg directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            shift_init (torch.Tensor): shift values for each marginal transformation (shape: [features]).
+            scale_init (torch.Tensor): scale values for each marginal transformation (shape: [features]).
+            fix (bool): Whether to fix tailparams (TTFfix) or not (TTF).
+            hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
+            mod (str): Which TTF modification to use ("std" refers to standard TTF trafo). Must be in ["std", "lin", "erfi", "qua"].
+            a_pos (torch.Tensor): breaking points for each marginal transformation for pos directions (shape: [features]).
+            a_neg (torch.Tensor): breaking points for each marginal transformation for neg directions (shape: [features]).
         """
         self.features = features
         super(ModifiedTailAffineMarginalTransform, self).__init__()
@@ -1794,10 +1791,10 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
         else:
             # create masks for heavy directions
-            self.mask_ll = neg_tail_init == 0 and pos_tail_init == 0
-            self.mask_lh = neg_tail_init == 0 and pos_tail_init > 0
-            self.mask_hl = neg_tail_init > 0 and pos_tail_init == 0
-            self.mask_hh = neg_tail_init > 0 and pos_tail_init > 0
+            self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
+            self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
+            self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
+            self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
 
 
         if shift_init is None:
@@ -1894,28 +1891,24 @@ class ModifiedTailAffineMarginalTransform(Transform):
             val = z.clone()
             lad = torch.zeros_like(z)
 
-            mask_lh_batch = self.mask_lh.expand_as(z)
-            mask_hl_batch = self.mask_hl.expand_as(z)
-            mask_hh_batch = self.mask_hh.expand_as(z)
-
             if self.mod == "std":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_both_forward(z[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
             elif self.mod == "lin":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_lin_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_lin_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_lin_both_forward(z[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val[mask_lh_batch], lad[mask_lh_batch] = r_erfi_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_erfi_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_erfi_both_forward(z[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_qua_right_forward(z[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_qua_left_forward(z[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_qua_both_forward(z[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
                 
         # Apply shift and scale
         val = self.shift + val * self.scale
@@ -1947,28 +1940,24 @@ class ModifiedTailAffineMarginalTransform(Transform):
             val = x.detach().clone()
             lad = torch.zeros_like(x)
 
-            mask_lh_batch = self.mask_lh.expand_as(x)
-            mask_hl_batch = self.mask_hl.expand_as(x)
-            mask_hh_batch = self.mask_hh.expand_as(x)
-
             if self.mod == "std":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_right_inverse(x[mask_lh_batch], self.pos_tail[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_left_inverse(x[mask_hl_batch], self.neg_tail[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_both_inverse(x[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
             elif self.mod == "lin":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_lin_right_inverse(x[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_lin_left_inverse(x[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_lin_both_inverse(x[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val[mask_lh_batch], lad[mask_lh_batch] = r_erfi_right_inverse(x[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_erfi_left_inverse(x[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_erfi_both_inverse(x[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
-                val[mask_lh_batch], lad[mask_lh_batch] = r_qua_right_inverse(x[mask_lh_batch], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
-                val[mask_hl_batch], lad[mask_hl_batch] = r_qua_left_inverse(x[mask_hl_batch], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
-                val[mask_hh_batch], lad[mask_hh_batch] = r_qua_both_inverse(x[mask_hh_batch], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                val[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                val[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                val[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
 
         lad = lad - torch.log(self.scale)
         return val, lad
