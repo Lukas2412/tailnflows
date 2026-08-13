@@ -36,6 +36,9 @@ LOG_SQRT_PI = math.log(SQRT_PI)
 MIN_ERFC_INV = 1e-6
 
 def _const_like(x, val):
+    """
+    Return constant tensor([val]) of shape Size([]) (!) and same dtype and device as x.
+    """
     return x.new_tensor(val)
 
 
@@ -286,7 +289,7 @@ def _compute_rt(a: torch.Tensor, tail_param: torch.Tensor) -> tuple[torch.Tensor
 
 
 def _cbrt(x): # real-valued cubic root, sign-correct
-    return torch.sign(x) * torch.pow(torch.abs(x), x.new_tensor(1.0 / 3.0))
+    return torch.sign(x) * torch.pow(torch.abs(x), _const_like(x, 1.0 / 3.0))
 
 
 def compute_c2_c0(a: torch.Tensor, tail_param: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -392,13 +395,16 @@ def _extreme_transform_and_lad(z, tail_param):
     return x, lad
 
 
-def _ttf_sym_value_and_logprime(z, lam):
+def _ttf_sym_value_and_logprime(z: torch.Tensor, lam: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     R_lambda(z) and log|R_lambda'(z)| for symmetric-λ TTF with mu=0, sigma=1.
+    Args:
+        z (torch.Tensor): Input (shape: [batch, features]).
+        lam (torch.Tensor): tailparam for each dimension (shape: [features]).
     Equations:
-    g = erfc(|z|/√2)
-    R(z) = sign(z) * (g^(-lam)-1)/lam
-    R'(z) = g^(-lam-1) * (√2/√π) * exp(-z^2/2) (even function)
+        g = erfc(|z|/√2)
+        R(z) = sign(z) * (g^(-lam)-1)/lam
+        R'(z) = g^(-lam-1) * (√2/√π) * exp(-z^2/2) (even function)
     Uses stable expm1/log forms.
     """
     u = torch.abs(z)
@@ -437,14 +443,17 @@ def _extreme_inverse_and_lad(x, tail_param):
     return z, lad
 
 
-def _ttf_sym_inverse_and_logprime(x, lam):
+def _ttf_sym_inverse_and_logprime(x: torch.Tensor, lam: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Inverse z = R_lambda^{-1}(x) and log|dz/dx| for symmetric-λ TTF with mu=0, sigma=1.
+    Args:
+        x (torch.Tensor): Input (shape: [batch, features]).
+        lam (torch.Tensor): tailparam for each dimension (shape: [features]).
     Equations:
-    inner = 1 + lam * |x|
-    g = inner^(-1/lam)
-    z = sign(x) * √2 * erfcinv(g)
-    log|dz/dx| = (-1 - 1/lam) * log(inner) + erfcinv(g)^2 + log(√π/√2)
+        inner = 1 + lam * |x|
+        g = inner^(-1/lam)
+        z = sign(x) * √2 * erfcinv(g)
+        log|dz/dx| = (-1 - 1/lam) * log(inner) + erfcinv(g)^2 + log(√π/√2)
     Computes erfcinv via ndtri/series (simple version here).
     """
     s = torch.sign(x)
@@ -775,19 +784,12 @@ def r_both_forward(z, lam_pos, lam_neg):
     left = z <= 0
     right = z >= 0
 
-    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
-    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+    x_left, lad_left = _ttf_sym_value_and_logprime(z, lam_neg)
+    x_right, lad_right = _ttf_sym_value_and_logprime(z, lam_pos)
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
-
-    # Left
-    x[left] = Rm_z[left]
-    lad[left] = logRp_z_m[left]
-
-    # Right
-    x[right] = Rp_z[right]
-    lad[right] = logRp_z_p[right]
+    # Case distinction
+    x = torch.where(left, x_left, x_right)
+    lad = torch.where(left, lad_left, lad_right)
 
     return x, lad
 
@@ -804,19 +806,12 @@ def r_both_inverse(x, lam_pos, lam_neg):
     left = x <= 0
     right = x >= 0
 
-    Rm_x, logRp_x_m = _ttf_sym_inverse_and_logprime(x, lam_neg)
-    Rp_x, logRp_x_p = _ttf_sym_inverse_and_logprime(x, lam_pos)
+    z_left, lad_left = _ttf_sym_inverse_and_logprime(x, lam_neg)
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(x, lam_pos)
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
-
-    # Left
-    z[left] = Rm_x[left]
-    lad[left] = logRp_x_m[left]
-
-    # Right
-    z[right] = Rp_x[right]
-    lad[right] = logRp_x_p[right]
+    # Case distinction
+    z = torch.where(left, z_left, z_right)
+    lad = torch.where(left, lad_left, lad_right)
 
     return z, lad
 
@@ -830,33 +825,54 @@ def r_lin_both_forward(z, lam_pos, lam_neg, a_pos, a_neg):
     assert torch.all(a_pos >= 0)
     assert torch.all(lam_neg > 0)
     assert torch.all(lam_pos > 0)
+    
     # Precompute anchors
-    Ra_minus, logRp_minus = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
-    Ra_plus, logRp_plus = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    Rp_a_minus = torch.exp(logRp_minus) # R’{λ-}(a-)
-    Rp_a_plus = torch.exp(logRp_plus) # R’{λ_+}(a_+)
+    Ra_minus, logRp_a_minus = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    Ra_plus, logRp_a_plus = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    Rp_a_minus = torch.exp(logRp_a_minus) # R’{λ-}(a-)
+    Rp_a_plus = torch.exp(logRp_a_plus) # R’{λ_+}(a_+)
 
+    # Regions
     left = z <= a_neg
-    mid  = (z >= a_neg) & (z <= a_pos)
-    right= z >= a_pos
+    mid = (z >= a_neg) & (z <= a_pos)
+    right = z >= a_pos
 
-    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
-    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
-
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
+    # TTF
+    Rz_minus, logRp_z_minus = _ttf_sym_value_and_logprime(z, lam_neg)
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
 
     # Left: (Rλ-(z) - Rλ-(a-)) / Rλ-'(a-) + a-
-    x[left] = ((Rm_z[left] - Ra_minus) / Rp_a_minus) + a_neg
-    lad[left] = logRp_z_m[left] - logRp_minus  # log(R'(z)/R'(a-))
+    x_left = ((Rz_minus - Ra_minus) / Rp_a_minus) + a_neg
+    lad_left = logRp_z_minus - logRp_a_minus  # log(R'(z)/R'(a-))
 
-    # Mid: identity
-    x[mid] = z[mid]
-    lad[mid] = 0.0
+    # Mid: Identity
+    x_mid = z
+    lad_mid = torch.zeros_like(z)
 
     # Right: (Rλ+(z) - Rλ+(a+)) / Rλ+'(a+) + a+
-    x[right] = ((Rp_z[right] - Ra_plus) / Rp_a_plus) + a_pos
-    lad[right] = logRp_z_p[right] - logRp_plus
+    x_right = ((Rz_plus - Ra_plus) / Rp_a_plus) + a_pos
+    lad_right = logRp_z_plus - logRp_a_plus # log(R'(z)/R'(a+))
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        torch.where(
+            mid,
+            x_mid,
+            x_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return x, lad
 
@@ -870,34 +886,52 @@ def r_lin_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg):
     assert torch.all(a_pos >= 0)
     assert torch.all(lam_neg > 0)
     assert torch.all(lam_pos > 0)
-    # Precompute anchors
-    Ra_minus, logRp_minus = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
-    Ra_plus, logRp_plus = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    Rp_a_minus = torch.exp(logRp_minus)
-    Rp_a_plus = torch.exp(logRp_plus)
 
+    # Precompute anchors
+    Ra_minus, logRp_a_minus = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    Ra_plus, logRp_a_plus = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    Rp_a_minus = torch.exp(logRp_a_minus)
+    Rp_a_plus = torch.exp(logRp_a_plus)
+
+    # Regions
     left = x <= a_neg
     mid  = (x >= a_neg) & (x <= a_pos)
     right= x >= a_pos
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
-
     # Left: Rλ-^{-1}( Rλ-(a-) + Rλ-'(a-) * (x - a-) )
-    y_left = Ra_minus + Rp_a_minus * (x[left] - a_neg)
+    y_left = Ra_minus + Rp_a_minus * (x - a_neg)
     z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
-    z[left] = z_left
-    lad[left] = torch.log(Rp_a_minus) + lad_left  # log(R'(a-)) + log|(R^{-1})'|
+    lad_left = torch.log(Rp_a_minus) + lad_left  # log(R'(a-)) + log|(R^{-1})'|
 
-    # Mid: identity
-    z[mid] = x[mid]
-    lad[mid] = 0.0
+    # Mid: Identity
+    z_mid = x
+    lad_mid = torch.zeros_like(x)
 
     # Right: Rλ+^{-1}( Rλ+(a+) + Rλ+'(a+) * (x - a+) )
-    y_right = Ra_plus + Rp_a_plus * (x[right] - a_pos)
+    y_right = Ra_plus + Rp_a_plus * (x - a_pos)
     z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
-    z[right] = z_right
-    lad[right] = torch.log(Rp_a_plus) + lad_right
+    lad_right = torch.log(Rp_a_plus) + lad_right  # log(R'(a+)) + log|(R^{-1})'|
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        torch.where(
+            mid,
+            z_mid,
+            z_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return z, lad
 
@@ -916,44 +950,80 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
     assert torch.all(r_pos > 0)
     assert torch.all(t_neg > 0)
     assert torch.all(t_pos > 0)
-    beta_mpm = r_neg / r_pos
+
+    # Correction factors for C1 smoothness at 0
+    beta_mp = torch.where(
+        r_neg <= r_pos,
+        r_neg / r_pos,
+        torch.ones_like(r_neg),
+    )
+    beta_pm = torch.where(
+        r_pos <= r_neg,
+        r_pos / r_neg,
+        torch.ones_like(r_pos),
+    )
 
     # Constants c_- and c_+
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
-    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
-    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
-    c_minus *= _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus *= _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
+    # Regions
     left_tail = z <= a_neg
     left_mid  = (z >= a_neg) & (z <= 0)
     right_mid = (z >= 0) & (z <= a_pos)
     right_tail= z >= a_pos
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
+    # Left tail: beta_pm * (Rλ-(z) - Rλ-(a-)) + c_-
+    Rz_minus, logRp_z_minus = _ttf_sym_value_and_logprime(z, lam_neg)
+    Ra_minus, _ = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    x_left_tail = beta_pm * (Rz_minus - Ra_minus) + c_minus
+    lad_left_tail = torch.log(beta_pm) + logRp_z_minus
 
-    # Left tail: Rλ-(z) - Rλ-(a-) + c_-
-    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
-    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
-    x[left_tail] = (Rm_z[left_tail] - Ra_minus) + c_minus
-    lad[left_tail] = logRp_z_m[left_tail]
+    # Left mid: beta_pm * (√π/2) r_- / √t_- erfi(√t_- z)
+    x_left_mid = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
+    x_left_mid = x_left_mid * _erfi_via_complex(torch.sqrt(t_neg) * z)
+    lad_left_mid = torch.log(beta_pm) + torch.log(r_neg) + (t_neg * z * z)
 
-    # Left mid: (√π/2) r_- / √t_- erfi(√t_- z)
-    x[left_mid] = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
-    x[left_mid] *= _erfi_via_complex(torch.sqrt(t_neg) * z[left_mid])
-    lad[left_mid] = torch.log(r_neg) + (t_neg * z[left_mid] * z[left_mid])
+    # Right mid: beta_mp * (√π/2) r_+ / √t_+ erfi(√t_+ z)
+    x_right_mid = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
+    x_right_mid = x_right_mid * _erfi_via_complex(torch.sqrt(t_pos) * z)
+    lad_right_mid = torch.log(beta_mp) + torch.log(r_pos) + (t_pos * z * z)
 
-    # Right mid: beta * (√π/2) r_+ / √t_+ erfi(√t_+ z)
-    x[right_mid] = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
-    x[right_mid] *= _erfi_via_complex(torch.sqrt(t_pos) * z[right_mid])
-    lad[right_mid] = torch.log(beta_mpm) + torch.log(r_pos) + (t_pos * z[right_mid] * z[right_mid])
-
-    # Right tail: beta * (Rλ+(z) - Rλ+(a+)) + c_+
-    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
+    # Right tail: beta_mp * (Rλ+(z) - Rλ+(a+)) + c_+
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
     Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    x[right_tail] = beta_mpm * (Rp_z[right_tail] - Ra_plus) + c_plus
-    lad[right_tail] = torch.log(beta_mpm) + logRp_z_p[right_tail]
+    x_right_tail = beta_mp * (Rz_plus - Ra_plus) + c_plus
+    lad_right_tail = torch.log(beta_mp) + logRp_z_plus
+
+    # Case distinction
+    x = torch.where(
+        left_tail,
+        x_left_tail,
+        torch.where(
+            left_mid,
+            x_left_mid,
+            torch.where(
+                right_mid,
+                x_right_mid,
+                x_right_tail,
+            ),
+        ),
+    )
+
+    lad = torch.where(
+        left_tail,
+        lad_left_tail,
+        torch.where(
+            left_mid,
+            lad_left_mid,
+            torch.where(
+                right_mid,
+                lad_right_mid,
+                lad_right_tail,
+            ),
+        ),
+    )
 
     return x, lad
 
@@ -972,64 +1042,83 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
     assert torch.all(t_neg > 0)
     assert torch.all(t_pos > 0)
 
-    beta_mpm = r_neg / r_pos
-    beta_pm = 1.0 / beta_mpm
+    # Correction factors for C1 smoothness at 0
+    beta_mp = torch.where(
+        r_neg <= r_pos,
+        r_neg / r_pos,
+        torch.ones_like(r_neg),
+    )
+    beta_pm = torch.where(
+        r_pos <= r_neg,
+        r_pos / r_neg,
+        torch.ones_like(r_pos),
+    )
+
+    # Constants c_- and c_+
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
+    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
-    c_minus = sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus  = beta_mpm * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
-
-    print("x.shape: ", x.shape)
-    print("lam_pos.shape: ", lam_pos.shape)
-    print("lam_neg.shape: ", lam_neg.shape)
-    print("a_pos.shape: ", a_pos.shape)
-    print("a_neg.shape: ", a_neg.shape)
-    print("r_pos.shape: ", r_pos.shape)
-    print("r_neg.shape: ", r_neg.shape)
-    print("t_pos.shape: ", t_pos.shape)
-    print("t_neg.shape: ", t_neg.shape)
-    print("c_minus.shape: ", c_minus.shape)
-    print("c_plus.shape: ", c_plus.shape)
-
+    # Regions
     left_tail = x <= c_minus
     left_mid  = (x >= c_minus) & (x <= 0)
     right_mid = (x >= 0) & (x <= c_plus)
     right_tail= x >= c_plus
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
+    # Left tail: Rλ-^{-1}( beta_pm^{-1} * x - c_- + Rλ-(a-) )
+    Ra_minus, _ = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    y_left = (x - c_minus) / beta_pm + Ra_minus
+    z_left_tail, lad_left_tail = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
+    lad_left_tail = -torch.log(beta_pm) + lad_left_tail
 
-    # Left tail: Rλ-^{-1}( x - c_- + Rλ-(a-) )
-    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
-    print("left_tail.shape: ", left_tail.shape)
-    print("x[left_tail].shape: ", x[left_tail].shape)
-    print("c_minus.shape: ", c_minus.shape)
-    print("Ra_minus.shape: ", Ra_minus.shape)
-    y_left = x[left_tail] - c_minus + Ra_minus
-    z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
-    z[left_tail] = z_left
-    lad[left_tail] = lad_left
-
-    # Left mid: (1/√t_-) erfi^{-1}( (2/√π) √t_-/r_- * x )
-    arg_left = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_neg) / r_neg) * x[left_mid]
+    # Left mid: (1/√t_-) erfi^{-1}( (2/√π) √t_-/r_- * beta_pm^{-1} * x )
+    arg_left = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_neg) / r_neg) * x / beta_pm
     u_left = _erfi_inv(arg_left)
-    z[left_mid] = u_left / torch.sqrt(t_neg)
+    z_left_mid = u_left / torch.sqrt(t_neg)
     # dz/dx = exp(-u^2) / r_-
-    lad[left_mid] = -torch.log(r_neg) - (u_left * u_left)
+    lad_left_mid = -torch.log(beta_pm) - torch.log(r_neg) - (u_left * u_left)
 
-    # Right mid: (1/√t_+) erfi^{-1}( (2/√π) √t_+/r_+ * beta_pm * x )
-    arg_right = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * (beta_pm * x[right_mid])
+    # Right mid: (1/√t_+) erfi^{-1}( (2/√π) √t_+/r_+ * beta_mp^{-1} * x )
+    arg_right = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * x / beta_mp
     u_right = _erfi_inv(arg_right)
-    z[right_mid] = u_right / torch.sqrt(t_pos)
-    # dz/dx = beta_pm * exp(-u^2) / r_+
-    lad[right_mid] = torch.log(beta_pm) - torch.log(r_pos) - (u_right * u_right)
+    z_right_mid = u_right / torch.sqrt(t_pos)
+    # dz/dx = beta_mp^{-1} * exp(-u^2) / r_+
+    lad_right_mid = -torch.log(beta_mp) - torch.log(r_pos) - (u_right * u_right)
 
-    # Right tail: Rλ+^{-1}( beta_pm * (x - c_+) + Rλ+(a+) )
-    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    y_right = beta_pm * (x[right_tail] - c_plus) + Ra_plus
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
-    z[right_tail] = z_right
-    lad[right_tail] = torch.log(beta_pm) + lad_right
+    # Right tail: Rλ+^{-1}( beta_mp^{-1} * (x - c_+) + Rλ+(a+) )
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    y_right = (x - c_plus) / beta_mp + Ra_plus
+    z_right_tail, lad_right_tail = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    lad_right_tail = -torch.log(beta_mp) + lad_right_tail
+
+    # Case distinction
+    z = torch.where(
+        left_tail,
+        z_left_tail,
+        torch.where(
+            left_mid,
+            z_left_mid,
+            torch.where(
+                right_mid,
+                z_right_mid,
+                z_right_tail,
+            ),
+        ),
+    )
+
+    lad = torch.where(
+        left_tail,
+        lad_left_tail,
+        torch.where(
+            left_mid,
+            lad_left_mid,
+            torch.where(
+                right_mid,
+                lad_right_mid,
+                lad_right_tail,
+            ),
+        ),
+    )
 
     return z, lad
 
@@ -1047,37 +1136,77 @@ def r_qua_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
     assert torch.all(c2_pos > 0)
     assert torch.all(c0_neg >= 0)
     assert torch.all(c0_pos >= 0)
-    beta_mpm = c0_neg / c0_pos
-    c_minus = (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
-    c_plus = beta_mpm * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
 
+    # Correction factors for C1 smoothness at 0
+    beta_mp = torch.where(
+        c0_neg <= c0_pos,
+        c0_neg / c0_pos,
+        torch.ones_like(c0_neg),
+    )
+    beta_pm = torch.where(
+        c0_pos <= c0_neg,
+        c0_pos / c0_neg,
+        torch.ones_like(c0_pos),
+    )
+
+    # Constants c_- and c_+
+    c_minus = beta_pm * (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_plus = beta_mp * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
+
+    # Regions
     left_tail = z <= a_neg
     left_mid  = (z >= a_neg) & (z <= 0)
     right_mid = (z >= 0) & (z <= a_pos)
     right_tail= z >= a_pos
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
-
-    # Left tail
-    Rm_z, logRp_z_m = _ttf_sym_value_and_logprime(z, lam_neg)
-    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_neg, lam_neg)
-    x[left_tail] = (Rm_z[left_tail] - Ra_minus) + c_minus
-    lad[left_tail] = logRp_z_m[left_tail]
+    # Left tail: Rλ-(z) - Rλ-(a-) + c_-
+    Rz_minus, logRp_z_minus = _ttf_sym_value_and_logprime(z, lam_neg)
+    Ra_minus, _ = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    x_left_tail = (Rz_minus - Ra_minus) + c_minus
+    lad_left_tail = logRp_z_minus
 
     # Left mid: (1/3) c2^- z^3 + c0^- z
-    x[left_mid] = (1.0 / 3.0) * c2_neg * (z[left_mid] ** 3) + c0_neg * z[left_mid]
-    lad[left_mid] = torch.log(c2_neg * (z[left_mid] ** 2) + c0_neg)
+    x_left_mid = (1.0 / 3.0) * c2_neg * (z ** 3) + c0_neg * z
+    lad_left_mid = torch.log(c2_neg * (z ** 2) + c0_neg)
 
-    # Right mid: beta * ((1/3) c2^+ z^3 + c0^+ z)
-    x[right_mid] = beta_mpm * ((1.0 / 3.0) * c2_pos * (z[right_mid] ** 3) + c0_pos * z[right_mid])
-    lad[right_mid] = torch.log(beta_mpm) + torch.log(c2_pos * (z[right_mid] ** 2) + c0_pos)
+    # Right mid: beta_mp * ((1/3) c2^+ z^3 + c0^+ z)
+    x_right_mid = beta_mp * ((1.0 / 3.0) * c2_pos * (z ** 3) + c0_pos * z)
+    lad_right_mid = torch.log(beta_mp) + torch.log(c2_pos * (z ** 2) + c0_pos)
 
-    # Right tail
-    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
-    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    x[right_tail] = beta_mpm * (Rp_z[right_tail] - Ra_plus) + c_plus
-    lad[right_tail] = torch.log(beta_mpm) + logRp_z_p[right_tail]
+    # Right tail: beta_mp * (Rλ+(z) - Rλ+(a+)) + c_+
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    x_right_tail = beta_mp * (Rz_plus - Ra_plus) + c_plus
+    lad_right_tail = torch.log(beta_mp) + logRp_z_plus
+
+    # Case distinction
+    x = torch.where(
+        left_tail,
+        x_left_tail,
+        torch.where(
+            left_mid,
+            x_left_mid,
+            torch.where(
+                right_mid,
+                x_right_mid,
+                x_right_tail,
+            ),
+        ),
+    )
+
+    lad = torch.where(
+        left_tail,
+        lad_left_tail,
+        torch.where(
+            left_mid,
+            lad_left_mid,
+            torch.where(
+                right_mid,
+                lad_right_mid,
+                lad_right_tail,
+            ),
+        ),
+    )
 
     return x, lad
 
@@ -1095,48 +1224,83 @@ def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
     assert torch.all(c2_pos > 0)
     assert torch.all(c0_neg >= 0)
     assert torch.all(c0_pos >= 0)
-    beta_mpm = c0_neg / c0_pos
-    beta_pm = 1.0 / beta_mpm
-    c_minus = (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
-    c_plus = beta_mpm * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
 
+    # Correction factors for C1 smoothness at 0
+    beta_mp = torch.where(
+        c0_neg <= c0_pos,
+        c0_neg / c0_pos,
+        torch.ones_like(c0_neg),
+    )
+    beta_pm = torch.where(
+        c0_pos <= c0_neg,
+        c0_pos / c0_neg,
+        torch.ones_like(c0_pos),
+    )
+
+    # Constants c_- and c_+
+    c_minus = beta_pm * (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_plus = beta_mp * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
+
+    # Regions
     left_tail = x <= c_minus
     left_mid  = (x >= c_minus) & (x <= 0)
     right_mid = (x >= 0) & (x <= c_plus)
     right_tail= x >= c_plus
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
+    # Left tail: Rλ-^{-1}( beta_pm^{-1} * (x - c_-) + Rλ-(a-) )
+    Ra_minus, _ = _ttf_sym_value_and_logprime(a_neg, lam_neg)
+    y_left = (x - c_minus) / beta_pm + Ra_minus
+    z_left_tail, lad_left_tail = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
+    lad_left_tail = -torch.log(beta_pm) + lad_left_tail
 
-    # Left tail: Rλ-^{-1}(x - c_- + Rλ-(a-))
-    Ra_minus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_neg, lam_neg)
-    y_left = x[left_tail] - c_minus + Ra_minus
-    z_left, lad_left = _ttf_sym_inverse_and_logprime(y_left, lam_neg)
-    z[left_tail] = z_left
-    lad[left_tail] = lad_left
-
-    # Left mid: Cardano with p = 3 c0^- / c2^-, q = -3 x / c2^-
+    # Left mid: Cardano with p = 3 c0^- / c2^-, q = -3 beta_pm^{-1} x / c2^-
     pL = (3.0 * c0_neg) / c2_neg
-    qL = -3.0 * x[left_mid] / c2_neg
+    qL = -3.0 * x / (beta_pm * c2_neg)
     deltaL = (qL / 2.0) ** 2 + (pL / 3.0) ** 3
-    zL = _cbrt(-qL / 2.0 + torch.sqrt(deltaL)) + _cbrt(-qL / 2.0 - torch.sqrt(deltaL))
-    z[left_mid] = zL
-    lad[left_mid] = -torch.log(c2_neg * (zL ** 2) + c0_neg)
+    z_left_mid = _cbrt(-qL / 2.0 + torch.sqrt(deltaL)) + _cbrt(-qL / 2.0 - torch.sqrt(deltaL))
+    lad_left_mid = -torch.log(beta_pm) - torch.log(c2_neg * (z_left_mid ** 2) + c0_neg)
 
-    # Right mid: Cardano with p = 3 c0^+ / c2^+, q = -3 beta_pm x / c2^+
+    # Right mid: Cardano with p = 3 c0^+ / c2^+, q = -3 beta_mp^{-1} x / c2^+
     pR = (3.0 * c0_pos) / c2_pos
-    qR = -3.0 * (beta_pm * x[right_mid]) / c2_pos
+    qR = -3.0 * x / (beta_mp * c2_pos)
     deltaR = (qR / 2.0) ** 2 + (pR / 3.0) ** 3
-    zR = _cbrt(-qR / 2.0 + torch.sqrt(deltaR)) + _cbrt(-qR / 2.0 - torch.sqrt(deltaR))
-    z[right_mid] = zR
-    lad[right_mid] = torch.log(beta_pm) - torch.log(c2_pos * (zR ** 2) + c0_pos)
+    z_right_mid = _cbrt(-qR / 2.0 + torch.sqrt(deltaR)) + _cbrt(-qR / 2.0 - torch.sqrt(deltaR))
+    lad_right_mid = -torch.log(beta_mp) - torch.log(c2_pos * (z_right_mid ** 2) + c0_pos)
 
-    # Right tail: Rλ+^{-1}( beta_pm * (x - c_+) + Rλ+(a+) )
-    Ra_plus, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    y_right = beta_pm * (x[right_tail] - c_plus) + Ra_plus
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
-    z[right_tail] = z_right
-    lad[right_tail] = torch.log(beta_pm) + lad_right
+    # Right tail: Rλ+^{-1}( beta_mp^{-1} * (x - c_+) + Rλ+(a+) )
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    y_right = (x - c_plus) / beta_mp + Ra_plus
+    z_right_tail, lad_right_tail = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    lad_right_tail = -torch.log(beta_mp) + lad_right_tail
+
+    # Case distinction
+    z = torch.where(
+        left_tail,
+        z_left_tail,
+        torch.where(
+            left_mid,
+            z_left_mid,
+            torch.where(
+                right_mid,
+                z_right_mid,
+                z_right_tail,
+            ),
+        ),
+    )
+
+    lad = torch.where(
+        left_tail,
+        lad_left_tail,
+        torch.where(
+            left_mid,
+            lad_left_mid,
+            torch.where(
+                right_mid,
+                lad_right_mid,
+                lad_right_tail,
+            ),
+        ),
+    )
 
     return z, lad
 
@@ -1149,19 +1313,32 @@ def r_right_forward(z, lam_pos):
     Returns (x, log|dx/dz|).
     """
     assert torch.all(lam_pos > 0)
+
     slope = _const_like(z, math.sqrt(2.0 / math.pi))
+
+    # Regions
     left = z <= 0
     right = z >= 0
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
+    # Left: Linear
+    x_left = slope * z
+    lad_left = torch.zeros_like(z) + torch.log(slope)
 
-    x[left] = slope * z[left]
-    lad[left] = torch.log(slope)
+    # Right: TTF
+    x_right, lad_right = _ttf_sym_value_and_logprime(z, lam_pos)
 
-    Rp_z, logRp_z_p = _ttf_sym_value_and_logprime(z, lam_pos)
-    x[right] = Rp_z[right]
-    lad[right] = logRp_z_p[right]
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
 
     return x, lad
 
@@ -1171,8 +1348,12 @@ def r_left_forward(z, lam_neg):
     Transform only the left tail with basic TTF; right side is linear with slope sqrt(2/pi).
     Returns (x, log|dx/dz|).
     """
+
     assert torch.all(lam_neg > 0)
+
+    # Compute via r_right_forward
     val_at_minus_z, lad_at_minus_z = r_right_forward(-z, lam_neg)
+
     return - val_at_minus_z, lad_at_minus_z
 
 
@@ -1182,19 +1363,30 @@ def r_right_inverse(x, lam_pos):
     Returns (z, log|dz/dx|).
     """
     assert torch.all(lam_pos > 0)
+
     slope_inv = _const_like(x, math.sqrt(math.pi / 2.0))
+
+    # Regions
     left = x <= 0
     right = x >= 0
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
+    z_left = slope_inv * x
+    lad_left = torch.zeros_like(x) + torch.log(slope_inv)
 
-    z[left] = slope_inv * x[left]
-    lad[left] = torch.log(slope_inv)
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(x, lam_pos)
 
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(x[right], lam_pos)
-    z[right] = z_right
-    lad[right] = lad_right
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
 
     return z, lad
 
@@ -1205,7 +1397,10 @@ def r_left_inverse(x, lam_neg):
     Returns (z, log|dz/dx|).
     """
     assert torch.all(lam_neg > 0)
+
+    # Compute via r_left_inverse
     val_at_minus_x, lad_at_minus_x = r_right_inverse(-x, lam_neg)
+
     return - val_at_minus_x, lad_at_minus_x
 
 
@@ -1216,21 +1411,39 @@ def r_lin_right_forward(z, lam_pos, a_pos):
     """
     assert torch.all(a_pos >= 0)
     assert torch.all(lam_pos > 0)
-    Rp_a, logRp_a = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    Rp_a_val = torch.exp(logRp_a)
 
+    # Precompute anchors
+    Ra_plus, logRp_a_plus = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    Rp_a_plus = torch.exp(logRp_a_plus) # R’{λ_+}(a_+)
+
+    # Regions
     left = z <= a_pos
     right= z >= a_pos
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
+    # TTF
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
 
-    x[left] = z[left]
-    lad[left] = 0.0
+    # Left: Identity
+    x_left = z
+    lad_left = torch.zeros_like(z)
 
-    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
-    x[right] = ((Rp_z[right] - Rp_a) / Rp_a_val) + a_pos
-    lad[right] = logRp_z[right] - logRp_a
+    # Right: (Rλ+(z) - Rλ+(a+)) / Rλ+'(a+) + a+
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
+    x_right = ((Rz_plus - Ra_plus) / Rp_a_plus) + a_pos
+    lad_right = logRp_z_plus - logRp_a_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
 
     return x, lad
 
@@ -1242,7 +1455,10 @@ def r_lin_left_forward(z, lam_neg, a_neg):
     """
     assert torch.all(a_neg <= 0)
     assert torch.all(lam_neg > 0)
+
+    # Compute via r_lin_right_forward
     val_at_minus_z, lad_at_minus_z = r_lin_right_forward(-z, lam_neg, -a_neg)
+
     return - val_at_minus_z, lad_at_minus_z
 
 
@@ -1253,22 +1469,36 @@ def r_lin_right_inverse(x, lam_pos, a_pos):
     """
     assert torch.all(a_pos >= 0)
     assert torch.all(lam_pos > 0)
-    Rp_a, logRp_a = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    Rp_a_val = torch.exp(logRp_a)
 
+    # Precompute anchors
+    Ra_plus, logRp_a_plus = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
+    Rp_a_plus = torch.exp(logRp_a_plus)
+
+    # Regions
     left = x <= a_pos
     right= x >= a_pos
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
+    # Left: Identity
+    z_left = x
+    lad_left = torch.zeros_like(x)
 
-    z[left] = x[left]
-    lad[left] = 0.0
+    # Right: Rλ+^{-1}( Rλ+(a+) + Rλ+'(a+) * (x - a+) )
+    y_right = Ra_plus + Rp_a_plus * (x - a_pos)
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+    lad_right = torch.log(Rp_a_plus) + lad_right # log(R'(a+)) + log|(R^{-1})'|
 
-    y = Rp_a + Rp_a_val * (x[right] - a_pos)
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
-    z[right] = z_right
-    lad[right] = torch.log(Rp_a_val) + lad_right
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
 
     return z, lad
 
@@ -1280,7 +1510,10 @@ def r_lin_left_inverse(x, lam_neg, a_neg):
     """
     assert torch.all(a_neg <= 0)
     assert torch.all(lam_neg > 0)
+
+    # Compute via r_lin_right_inverse
     val_at_minus_x, lad_at_minus_x = r_lin_right_inverse(-x, lam_neg, -a_neg)
+
     return - val_at_minus_x, lad_at_minus_x
 
 
@@ -1294,29 +1527,52 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     assert torch.all(lam_pos > 0)
     assert torch.all(r_pos > 0)
     assert torch.all(t_pos > 0)
+
+    print("Slope of the linear part (r-param): ", r_pos)
+
+    # Constant c_+
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
     c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
+    # Regions
     left = z <= 0
-    mid  = (z >= 0) & (z <= a_pos)
-    right= z >= a_pos
-
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
+    mid = (z >= 0) & (z <= a_pos)
+    right = z >= a_pos
 
     # Left: r_+ z
-    x[left] = r_pos * z[left]
-    lad[left] = torch.log(r_pos)
+    x_left = r_pos * z
+    lad_left = torch.zeros_like(z) +  torch.log(r_pos)
 
     # Mid: (√π/2) r_+ / √t_+ erfi(√t_+ z)
-    x[mid] = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * z[mid])
-    lad[mid] = torch.log(r_pos) + (t_pos * z[mid] * z[mid])
+    x_mid = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * z)
+    lad_mid = torch.log(r_pos) + (t_pos * z * z)
 
     # Right: Rλ+(z) - Rλ+(a+) + c_+
-    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
-    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    x[right] = (Rp_z[right] - Rp_a) + c_plus
-    lad[right] = logRp_z[right]
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    x_right = (Rz_plus - Ra_plus) + c_plus
+    lad_right = logRp_z_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        torch.where(
+            mid,
+            x_mid,
+            x_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return x, lad
 
@@ -1330,6 +1586,8 @@ def r_erfi_left_forward(z, lam_neg, a_neg, r_neg, t_neg):
     assert torch.all(lam_neg > 0)
     assert torch.all(r_neg > 0)
     assert torch.all(t_neg > 0)
+
+    # Compute via r_erfi_right_forward
     val_at_minus_z, lad_at_minus_z = r_erfi_right_forward(-z, lam_neg, -a_neg, r_neg, t_neg)
     return - val_at_minus_z, lad_at_minus_z
 
@@ -1343,32 +1601,51 @@ def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
     assert torch.all(lam_pos > 0)
     assert torch.all(r_pos > 0)
     assert torch.all(t_pos > 0)
+
+    # Constant c_+
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
     c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
 
+    # Regions
     left = x <= 0
     mid  = (x >= 0) & (x <= c_plus)
     right= x >= c_plus
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
-
     # Left: x / r_+
-    z[left] = x[left] / r_pos
-    lad[left] = -torch.log(r_pos)
+    z_left = x / r_pos
+    lad_left = -torch.log(r_pos)
 
     # Mid: (1/√t_+) erfi^{-1}( (2/√π) √t_+/r_+ x )
-    arg = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * x[mid]
-    u = _erfi_inv(arg)
-    z[mid] = u / torch.sqrt(t_pos)
-    lad[mid] = -torch.log(r_pos) - (u * u)  # dz/dx = exp(-u^2)/r_+
+    arg_mid = (2.0 / math.sqrt(math.pi)) * (torch.sqrt(t_pos) / r_pos) * x
+    u_mid = _erfi_inv(arg_mid)
+    z_mid = u_mid / torch.sqrt(t_pos)
+    lad_mid = -torch.log(r_pos) - (u_mid * u_mid)  # dz/dx = exp(-u^2)/r_+
 
     # Right: Rλ+^{-1}( x - c_+ + Rλ+(a+) )
-    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    y = x[right] - c_plus + Rp_a
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
-    z[right] = z_right
-    lad[right] = lad_right
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    y_right = x - c_plus + Ra_plus
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        torch.where(
+            mid,
+            z_mid,
+            z_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return z, lad
 
@@ -1382,7 +1659,10 @@ def r_erfi_left_inverse(x, lam_neg, a_neg, r_neg, t_neg):
     assert torch.all(lam_neg > 0)
     assert torch.all(r_neg > 0)
     assert torch.all(t_neg > 0)
+
+    # Compute via r_erfi_right_inverse
     val_at_minus_x, lad_at_minus_x = r_erfi_right_inverse(-x, lam_neg, -a_neg, r_neg, t_neg)
+
     return - val_at_minus_x, lad_at_minus_x
 
 
@@ -1395,28 +1675,49 @@ def r_qua_right_forward(z, lam_pos, a_pos, c0_pos, c2_pos):
     assert torch.all(lam_pos > 0)
     assert torch.all(c2_pos > 0)
     assert torch.all(c0_pos >= 0)
+
+    # Constant c_+
     c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
 
+    # Regions
     left = z <= 0
     mid  = (z >= 0) & (z <= a_pos)
     right= z >= a_pos
 
-    x = torch.empty_like(z)
-    lad = torch.empty_like(z)
-
     # Left: c0^+ z
-    x[left] = c0_pos * z[left]
-    lad[left] = torch.log(c0_pos)
+    x_left = c0_pos * z
+    lad_left = torch.zeros_like(z) + torch.log(c0_pos)
 
     # Mid: (1/3) c2^+ z^3 + c0^+ z
-    x[mid] = (1.0 / 3.0) * c2_pos * (z[mid] ** 3) + c0_pos * z[mid]
-    lad[mid] = torch.log(c2_pos * (z[mid] ** 2) + c0_pos)
+    x_mid = (1.0 / 3.0) * c2_pos * (z ** 3) + c0_pos * z
+    lad_mid = torch.log(c2_pos * (z ** 2) + c0_pos)
 
     # Right: Rλ+(z) - Rλ+(a+) + c_+
-    Rp_z, logRp_z = _ttf_sym_value_and_logprime(z, lam_pos)
-    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(z, 0.0) + a_pos, lam_pos)
-    x[right] = (Rp_z[right] - Rp_a) + c_plus
-    lad[right] = logRp_z[right]
+    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    x_right = (Rz_plus - Ra_plus) + c_plus
+    lad_right = logRp_z_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        torch.where(
+            mid,
+            x_mid,
+            x_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return x, lad
 
@@ -1430,7 +1731,10 @@ def r_qua_left_forward(z, lam_neg, a_neg, c0_neg, c2_neg):
     assert torch.all(lam_neg > 0)
     assert torch.all(c2_neg > 0)
     assert torch.all(c0_neg >= 0)
+
+    # Compute via r_qua_right_forward
     val_at_minus_z, lad_at_minus_z = r_qua_right_forward(-z, lam_neg, -a_neg, c0_neg, c2_neg)
+
     return -val_at_minus_z, lad_at_minus_z
 
 
@@ -1443,33 +1747,51 @@ def r_qua_right_inverse(x, lam_pos, a_pos, c0_pos, c2_pos):
     assert torch.all(lam_pos > 0)
     assert torch.all(c2_pos > 0)
     assert torch.all(c0_pos >= 0)
+
+    # Constant c_plus
     c_plus = (1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos
 
+    # Regions
     left = x <= 0
     mid  = (x >= 0) & (x <= c_plus)
     right= x >= c_plus
 
-    z = torch.empty_like(x)
-    lad = torch.empty_like(x)
-
     # Left: x / c0^+
-    z[left] = x[left] / c0_pos
-    lad[left] = -torch.log(c0_pos)
+    z_left = x / c0_pos
+    lad_left = torch.zeros_like(x) - torch.log(c0_pos)
 
     # Mid: Cardano with p = 3 c0^+ / c2^+, q = -3 x / c2^+
-    p = (3.0 * c0_pos) / c2_pos
-    q = -3.0 * x[mid] / c2_pos
-    delta = (q / 2.0) ** 2 + (p / 3.0) ** 3
-    zM = _cbrt(-q / 2.0 + torch.sqrt(delta)) + _cbrt(-q / 2.0 - torch.sqrt(delta))
-    z[mid] = zM
-    lad[mid] = -torch.log(c2_pos * (zM ** 2) + c0_pos)
+    p_mid = (3.0 * c0_pos) / c2_pos
+    q_mid = -3.0 * x / c2_pos
+    delta_mid = (q_mid / 2.0) ** 2 + (p_mid / 3.0) ** 3
+    z_mid = _cbrt(-q_mid / 2.0 + torch.sqrt(delta_mid)) + _cbrt(-q_mid / 2.0 - torch.sqrt(delta_mid))
+    lad_mid = -torch.log(c2_pos * (z_mid ** 2) + c0_pos)
 
     # Right: Rλ+^{-1}( x - c_+ + Rλ+(a+) )
-    Rp_a, _ = _ttf_sym_value_and_logprime(_const_like(x, 0.0) + a_pos, lam_pos)
-    y = x[right] - c_plus + Rp_a
-    z_right, lad_right = _ttf_sym_inverse_and_logprime(y, lam_pos)
-    z[right] = z_right
-    lad[right] = lad_right
+    Ra_plus, _ = _ttf_sym_value_and_logprime(a_pos, lam_pos)
+    y_right = x - c_plus + Ra_plus
+    z_right, lad_right = _ttf_sym_inverse_and_logprime(y_right, lam_pos)
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        torch.where(
+            mid,
+            z_mid,
+            z_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
 
     return z, lad
 
@@ -1483,7 +1805,10 @@ def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
     assert torch.all(lam_neg > 0)
     assert torch.all(c2_neg > 0)
     assert torch.all(c0_neg >= 0)
+
+    # Compute via r_qua_right_inverse
     val_at_minus_x, lad_at_minus_x = r_qua_right_inverse(-x, lam_neg, -a_neg, c0_neg, c2_neg)
+
     return -val_at_minus_x, lad_at_minus_x
 
 
@@ -1751,6 +2076,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
     ):
         """
         Build a marginal TTF layer.
+        Reminder:
+            The tailparams given here a GPD shape params, which are reciprocal to the corresponding tail indices / degrees of freedom (df)!
         Args:
             features (int):
             pos_tail_init (torch.Tensor): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
@@ -1821,7 +2148,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
         self.mod = mod
 
         assert mod in ["std", "lin", "erfi", "qua"]
-        assert not (mod in ["lin", "erfi"] and (a_neg is None or a_pos is None)), "Missing a_neg / a_pos params for lin / erfi TTF transformation!"
+        assert not (mod in ["lin", "erfi"] and (a_neg is None or a_pos is None)), f"Missing a_neg / a_pos params for lin / erfi TTF transformation:\nGot mod = {mod}, a_pos = {a_pos}, a_neg = {a_neg}."
 
         if a_neg is not None:
             self.a_neg = a_neg
@@ -1837,9 +2164,11 @@ class ModifiedTailAffineMarginalTransform(Transform):
             if a_neg is None:
                 print("No a_neg param was given. Compute with compute_a...")
                 self.a_neg = -torch.from_numpy(compute_a(self.neg_tail.numpy()))
+                print("a_neg: ", self.a_neg)
             if a_pos is None:
                 print("No a_pos param was given. Compute with compute_a...")
                 self.a_pos = torch.from_numpy(compute_a(self.pos_tail.numpy()))
+                print("a_pos: ", self.a_pos)
 
             # compute c2 and c0 params
             self.c2_neg, self.c0_neg = compute_c2_c0(-self.a_neg, self.neg_tail)
@@ -1852,15 +2181,15 @@ class ModifiedTailAffineMarginalTransform(Transform):
             self.r_pos, self.t_pos = _compute_rt(self.a_pos, self.pos_tail)
 
     @property
-    def pos_tail(self):
+    def pos_tail(self) -> torch.Tensor:
         return softplus(self._unc_pos_tail)
 
     @property
-    def neg_tail(self):
+    def neg_tail(self) -> torch.Tensor:
         return softplus(self._unc_neg_tail)
 
     @property
-    def scale(self):
+    def scale(self) -> torch.Tensor:
         return 1e-3 + softplus(self._unc_scale)
 
     def fix_tails(self):
@@ -1869,98 +2198,151 @@ class ModifiedTailAffineMarginalTransform(Transform):
         self._unc_neg_tail.requires_grad = False
         print("Fixed tailparams.")
 
-    def forward(self, z: torch.Tensor):
+    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute with specified transformation and apply shift & scale.
+        Args:
+            z (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                x (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
         """
+        assert z.ndim == 2, (
+            f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor "
+            f"with shape {z.shape}"
+        )
+        assert z.shape[1] == self.features, (
+                f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
+        )
+
         if not self.hd_only:
             # All directions will be transformed
             if self.mod == "std":
-                val, lad = r_both_forward(z, self.pos_tail, self.neg_tail)
+                x, lad = r_both_forward(z, self.pos_tail, self.neg_tail)
             elif self.mod == "lin":
-                val, lad = r_lin_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
+                x, lad = r_lin_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val, lad = r_erfi_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
+                x, lad = r_erfi_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
-                val, lad = r_qua_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
+                x, lad = r_qua_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
 
         else:
             # transform only in heavy-tailed directions by using boolean masks and the appropriate functions
-            val = z.clone()
+            x = z.clone()
             lad = torch.zeros_like(z)
 
             if self.mod == "std":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
             elif self.mod == "lin":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
                 
         # Apply shift and scale
-        val = self.shift + val * self.scale
+        x = self.shift + x * self.scale
         lad = lad + torch.log(self.scale)
 
-        return val, lad
+        return x, lad.sum(dim=-1)
 
     def inverse(self, x: torch.Tensor):
         """
         Compute with specified transformation and take into account shift & scale.
+        Args:
+            x (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                z (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
         """
+        assert x.ndim == 2, (
+            f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor "
+            f"with shape {x.shape}"
+        )
+        assert x.shape[1] == self.features, (
+                f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
+        )
+
+        # Invert affine transformation
         x = (x - self.shift) / self.scale
 
         if not self.hd_only:
            # All directions will be transformed
             if self.mod == "std":
-                val, lad = r_both_inverse(x, self.pos_tail, self.neg_tail)
+                z, lad = r_both_inverse(x, self.pos_tail, self.neg_tail)
             elif self.mod == "lin":
-                val, lad = r_lin_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
+                z, lad = r_lin_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val, lad = r_erfi_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
+                z, lad = r_erfi_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
-                val, lad = r_qua_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
+                z, lad = r_qua_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
 
         else:
             # transform only in heavy-tailed directions by using boolean masks and the appropriate functions
-            val = x.detach().clone()
+            z = x.detach().clone()
             lad = torch.zeros_like(x)
 
             if self.mod == "std":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh])
             elif self.mod == "lin":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_lin_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_lin_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
-                val[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
-                val[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
-                val[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
 
         lad = lad - torch.log(self.scale)
-        return val, lad
+        return z, lad.sum(dim=-1)
 
     
 
