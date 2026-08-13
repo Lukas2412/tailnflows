@@ -178,33 +178,63 @@ def _stable_erfcinv(x, log_x):
 # complex erf implementation
 _erf_complex = ERF_1994(128)
 
-class Erfi_Via_Complex_Autograd(torch.autograd.Function):
+class Erfi_Autograd(torch.autograd.Function):
     """
-    Autograd-compatible implementation of erfi using erfi(z) = -i * erf(iz)
+    Autograd-compatible implementation of erfi for real inputs z using erfi(z) = -i * erf(iz).
     """
 
     @staticmethod
-    def forward(ctx, z):
-        # Save the input for the backward pass
-        ctx.save_for_backward(z)
-        # Compute the forward pass
+    def forward(ctx, z: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            ctx: context object.
+            z (torch.Tensor): Input tensor (real-valued).
+        Returns:
+            x (torch.Tensor): Output tensor x = erfi(z) (real-valued).
+        """
+        assert z.dtype in (torch.float32, torch.float64), f"Input must be real (float32 or float64), got {z.dtype}."
+
+        # Compute forward pass
         cdtype = torch.complex128 if z.dtype == torch.float64 else torch.complex64
         iz = (1j * z.to(cdtype))
         val = _erf_complex.to(device=z.device)(iz)
-        erfi_val = (-1j) * val
-        return erfi_val.real.to(z.dtype)
+        x_complex = (-1j) * val
+        x = x_complex.real.to(z.dtype)
+
+        # Save input z for backward pass
+        ctx.save_for_backward(z)
+
+        return x
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_x: torch.Tensor) -> tuple[torch.Tensor,]:
+        """
+        Args:
+            ctx: context object.
+            grad_x (torch.Tensor): loss gradient w.r.t. output x.
+        Returns:
+            (tuple): tuple[torch.Tensor,] containing
+                grad_z (torch.Tensor): loss gradient w.r.t. input z.
+        """
+
+        # Load input z
         z, = ctx.saved_tensors
-        # Compute the gradient (derivative of the erfi function)
-        grad_input = grad_output * (2 / _const_like(z, SQRT_PI)) * torch.exp(z**2)
-        return grad_input
+
+        # Compute analytical derivative of erfi function
+        deriv = (2.0 / _const_like(z, SQRT_PI)) * torch.exp(z*z)
+
+        # Apply chain rule
+        grad_z = grad_x * deriv
+
+        return grad_z, 
 
 
 # Create an instance of the function
-def _erfi_via_complex(z: torch.Tensor) -> torch.Tensor:
-    return Erfi_Via_Complex_Autograd.apply(z) # type: ignore
+def _erfi(z: torch.Tensor) -> torch.Tensor:
+    """
+    Implementation of the imaginary error function for real inputs. Tracked by the autograd engine.
+    """
+    return Erfi_Autograd.apply(z) # type: ignore
 
 
 def _erfi_inv_initial_guess(x: torch.Tensor) -> torch.Tensor:
@@ -218,47 +248,97 @@ def _erfi_inv_initial_guess(x: torch.Tensor) -> torch.Tensor:
 
     # Use series inversion (order 1) for small |x| < 1.5
     small = x_abs < 1.5
-    if small.any():
-        # Leading term: erfi(y) ≈ 2y/√π
-        guess[small] = _const_like(x, SQRT_PI / 2) * x[small]
+    # Leading term: erfi(y) ≈ 2y/√π
+    guess_small = _const_like(x, SQRT_PI / 2) * x
 
     # Use asymptotic inversion for large |x| >= 1.5
-    large = ~small
-    if large.any():
-        # Asymptotic expansion (first order) for large y: erfi(y) ~ e^{y^2} / (sqrt(pi) y)
-        # Solve: x_abs ≈ e^{y^2} / (sqrt(pi) y)
-        # Take log on both sides and approximate y^2 - log(y) with y^2 for large y:
+    # Asymptotic expansion (first order) for large y: erfi(y) ~ e^{y^2} / (sqrt(pi) y)
+    # Solve: x_abs ≈ e^{y^2} / (sqrt(pi) y)
+    # Take log on both sides and approximate y^2 - log(y) with y^2 for large y:
 
-        guess_large = torch.sqrt(torch.log(x_abs[large]) + _const_like(x, LOG_SQRT_PI))
-        guess[large] = s[large] * guess_large
+    guess_large = torch.sqrt(torch.log(x_abs) + _const_like(x, LOG_SQRT_PI))
+    guess_large = s * guess_large
+
+    guess = torch.where(
+        small,
+        guess_small,
+        guess_large,
+    )
 
     return guess
 
 
-def _erfi_inv(x: torch.Tensor, iters: int = 6) -> torch.Tensor:
+
+class Erfi_Inv_Autograd(torch.autograd.Function):
     """
-    Compute erfi^{-1}(x) using:
-    - hybrid initial guess (series for small, asymptotic for large)
-    - Halley's method for refinement
+    Autograd-compatible implementation of erfi^{-1}(x) for real inputs x using a hybrid initial guess and 6 Halley iterations.
     """
 
-    orig_dtype = x.dtype
-    x64 = x.to(torch.float64)
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            ctx: context object.
+            x (torch.Tensor): Input tensor (real-valued).
+        Returns:
+            z (torch.Tensor): Output tensor z = erfi^{-1}(x) (real-valued).
+        """
+        assert x.dtype in (torch.float32, torch.float64), f"Input must be real (float32 or float64), got {x.dtype}."
 
-    y64 = _erfi_inv_initial_guess(x64).clone()
+        # Compute forward pass
+        orig_dtype = x.dtype
+        x64 = x.to(torch.float64)
 
-    for _ in range(iters):
-        f = _erfi_via_complex(y64) - x64                   # f(y)
-        fp = 2.0 / SQRT_PI * torch.exp(y64 * y64)    # f'(y)
-        fpp = 2.0 * y64 * fp                         # f''(y)
+        # initial guess
+        z64 = _erfi_inv_initial_guess(x64).clone()
 
-        # Halley update:
-        # y_{n+1} = y - (2 f f') / (2 (f')^2 - f f'')
-        nom = 2 * f * fp
-        denom = 2 * fp * fp - f * fpp
-        y64 = y64 - nom / denom
+        # Halley iteration
+        for _ in range(6):
+            f = _erfi(z64) - x64                        # f(y)
+            fp = 2.0 / SQRT_PI * torch.exp(z64 * z64)   # f'(y)
+            fpp = 2.0 * z64 * fp                        # f''(y)
 
-    return y64.to(orig_dtype)
+            # Halley update:
+            # z_{n+1} = z - (2 f f') / (2 (f')^2 - f f'')
+            nom = 2.0 * f * fp
+            denom = 2.0 * fp * fp - f * fpp
+            z64 = z64 - nom / denom
+
+        z = z64.to(orig_dtype)
+
+        # Save input x and output z for backward pass
+        ctx.save_for_backward(x, z)
+
+        return z
+
+    @staticmethod
+    def backward(ctx, grad_z: torch.Tensor) -> tuple[torch.Tensor,]:
+        """
+        Args:
+            ctx: context object.
+            grad_z (torch.Tensor): loss gradient w.r.t. output z.
+        Returns:
+            (tuple): tuple[torch.Tensor,] containing
+                grad_x (torch.Tensor): loss gradient w.r.t. input x.
+        """
+
+        # Load input x and output z
+        x, z = ctx.saved_tensors
+        # Compute analytical derivate of erfi^{-1} function
+        deriv = (_const_like(x, SQRT_PI) / 2.0) * torch.exp(-z*z)
+
+        # Apply chain rule
+        grad_x = grad_z * deriv
+
+        return grad_x,
+
+
+# Create an instance of the function
+def _erfi_inv(x: torch.Tensor) -> torch.Tensor:
+    """
+    Implementation of the inverse imaginary error function for real inputs. Tracked by the autograd engine.
+    """
+    return Erfi_Inv_Autograd.apply(x) # type: ignore
 
 
 
@@ -965,8 +1045,8 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
     # Constants c_- and c_+
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
-    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi(torch.sqrt(t_pos) * a_pos)
 
     # Regions
     left_tail = z <= a_neg
@@ -982,12 +1062,12 @@ def r_erfi_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
     # Left mid: beta_pm * (√π/2) r_- / √t_- erfi(√t_- z)
     x_left_mid = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg))
-    x_left_mid = x_left_mid * _erfi_via_complex(torch.sqrt(t_neg) * z)
+    x_left_mid = x_left_mid * _erfi(torch.sqrt(t_neg) * z)
     lad_left_mid = torch.log(beta_pm) + torch.log(r_neg) + (t_neg * z * z)
 
     # Right mid: beta_mp * (√π/2) r_+ / √t_+ erfi(√t_+ z)
     x_right_mid = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos))
-    x_right_mid = x_right_mid * _erfi_via_complex(torch.sqrt(t_pos) * z)
+    x_right_mid = x_right_mid * _erfi(torch.sqrt(t_pos) * z)
     lad_right_mid = torch.log(beta_mp) + torch.log(r_pos) + (t_pos * z * z)
 
     # Right tail: beta_mp * (Rλ+(z) - Rλ+(a+)) + c_+
@@ -1056,8 +1136,8 @@ def r_erfi_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, r_pos, t_pos, r_neg, 
 
     # Constants c_- and c_+
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
-    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi_via_complex(torch.sqrt(t_neg) * a_neg)
-    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+    c_minus = beta_pm * sqrt_pi_over_2 * (r_neg / torch.sqrt(t_neg)) * _erfi(torch.sqrt(t_neg) * a_neg)
+    c_plus  = beta_mp * sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi(torch.sqrt(t_pos) * a_pos)
 
     # Regions
     left_tail = x <= c_minus
@@ -1532,7 +1612,7 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
 
     # Constant c_+
     sqrt_pi_over_2 = _const_like(z, math.sqrt(math.pi) / 2.0)
-    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi(torch.sqrt(t_pos) * a_pos)
 
     # Regions
     left = z <= 0
@@ -1544,7 +1624,7 @@ def r_erfi_right_forward(z, lam_pos, a_pos, r_pos, t_pos):
     lad_left = torch.zeros_like(z) +  torch.log(r_pos)
 
     # Mid: (√π/2) r_+ / √t_+ erfi(√t_+ z)
-    x_mid = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * z)
+    x_mid = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi(torch.sqrt(t_pos) * z)
     lad_mid = torch.log(r_pos) + (t_pos * z * z)
 
     # Right: Rλ+(z) - Rλ+(a+) + c_+
@@ -1604,7 +1684,7 @@ def r_erfi_right_inverse(x, lam_pos, a_pos, r_pos, t_pos):
 
     # Constant c_+
     sqrt_pi_over_2 = _const_like(x, math.sqrt(math.pi) / 2.0)
-    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi_via_complex(torch.sqrt(t_pos) * a_pos)
+    c_plus = sqrt_pi_over_2 * (r_pos / torch.sqrt(t_pos)) * _erfi(torch.sqrt(t_pos) * a_pos)
 
     # Regions
     left = x <= 0
