@@ -107,7 +107,7 @@ class Student(Target):
             """
             z_np = z.detach().cpu().numpy()
             log_probs = self.dist.computeLogPDF(z_np)
-            return torch.tensor(log_probs, dtype=z.dtype, device=z.device)
+            return torch.tensor(log_probs, dtype=z.dtype, device=z.device).squeeze(dim=-1)
 
         def sample(self, num_samples: int = 1) -> torch.Tensor:
             """Sample from Student's t-distribution
@@ -160,7 +160,7 @@ class GaussianCopula(Target):
             """
             z_np = z.detach().cpu().numpy()
             log_probs = self.dist.computeLogPDF(z_np)
-            return torch.tensor(log_probs, dtype=z.dtype, device=z.device)
+            return torch.tensor(log_probs, dtype=z.dtype, device=z.device).squeeze(dim=-1)
 
         def sample(self, num_samples: int = 1) -> torch.Tensor:
             """Sample from Gaussian Copula distribution
