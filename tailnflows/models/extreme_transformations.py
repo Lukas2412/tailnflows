@@ -24,8 +24,6 @@ from nflows.transforms.splines.rational_quadratic import (
 
 from tailnflows.models.simple_spline import forward_rqs, inverse_rqs
 
-DEFAULT_DTYPE = torch.float32
-
 MAX_TAIL = 5.0
 LOW_TAIL_INIT = 0.1
 HIGH_TAIL_INIT = 0.9
@@ -2148,11 +2146,11 @@ class ModifiedTailAffineMarginalTransform(Transform):
         neg_tail_init: Optional[torch.Tensor] = None,
         shift_init: Optional[torch.Tensor] = None,
         scale_init: Optional[torch.Tensor] = None,
-        fix: bool = False,
         hd_only: bool = False,
         mod: str = "std",
-        a_pos: Optional[torch.Tensor] = None,
-        a_neg: Optional[torch.Tensor] = None,
+        a_pos_init: Optional[torch.Tensor] = None,
+        a_neg_init: Optional[torch.Tensor] = None,
+        fix_params: bool = False,
     ):
         """
         Build a marginal TTF layer.
@@ -2164,16 +2162,14 @@ class ModifiedTailAffineMarginalTransform(Transform):
             neg_tail_init (torch.Tensor): tailparams for each marginal transformation for neg directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
             shift_init (torch.Tensor): shift values for each marginal transformation (shape: [features]).
             scale_init (torch.Tensor): scale values for each marginal transformation (shape: [features]).
-            fix (bool): Whether to fix tailparams (TTFfix) or not (TTF).
             hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
             mod (str): Which TTF modification to use ("std" refers to standard TTF trafo). Must be in ["std", "lin", "erfi", "qua"].
-            a_pos (torch.Tensor): breaking points for each marginal transformation for pos directions (shape: [features]).
-            a_neg (torch.Tensor): breaking points for each marginal transformation for neg directions (shape: [features]).
+            a_pos_init (torch.Tensor): breakpoints (>= 0.0) for each marginal transformation for pos directions (shape: [features]). Defaults to 1.0 for every marginal if not specified.
+            a_neg_init (torch.Tensor): breakpoints (<= 0.0) for each marginal transformation for neg directions (shape: [features]). Defaults to -1.0 for every marginal if not specified.
+            fix_params (bool): Whether to fix transformation parameters (TTFfix) or make them learnable (TTF). If you want to fix only some, but not all, parameters, use fix_params=False and call the corresponding methods (e.g. transform.fix_tails()).
         """
         self.features = features
         super(ModifiedTailAffineMarginalTransform, self).__init__()
-
-        self.fix = fix
         
         # random inits if needed
         if pos_tail_init is None:
@@ -2186,8 +2182,17 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 LOW_TAIL_INIT, HIGH_TAIL_INIT
             ).sample([features])
 
-        pos_tail_init = pos_tail_init.to(DEFAULT_DTYPE)
-        neg_tail_init = neg_tail_init.to(DEFAULT_DTYPE)
+        if a_pos_init is None:
+            a_pos_init = torch.ones([features])
+
+        if a_neg_init is None:
+            a_neg_init = -torch.ones([features])
+
+        if shift_init is None:
+            shift_init = torch.zeros([features])
+
+        if scale_init is None:
+            scale_init = torch.ones([features])
 
         if not hd_only:
             # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
@@ -2196,69 +2201,67 @@ class ModifiedTailAffineMarginalTransform(Transform):
             pos_tail_init[pos_mask] = 0.001
             neg_tail_init[neg_mask] = 0.001
 
-        else:
-            # create masks for heavy directions
-            self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
-            self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
-            self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
-            self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
+        # create masks for heavy directions
+        self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
+        self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
+        self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
+        self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
 
-
-        if shift_init is None:
-            shift_init = torch.zeros([features])
-
-        if scale_init is None:
-            scale_init = torch.ones([features])
-
+        # assert correct shapes
         assert torch.Size([features]) == pos_tail_init.shape
         assert torch.Size([features]) == neg_tail_init.shape
         assert torch.Size([features]) == shift_init.shape
         assert torch.Size([features]) == scale_init.shape
-        
-        # convert to unconstrained versions
+        assert torch.Size([features]) == a_pos_init.shape
+        assert torch.Size([features]) == a_neg_init.shape
+
+        self.hd_only = hd_only
+
+        assert mod in ["std", "lin", "erfi", "qua"]
+        self.mod = mod
+
+        # Specific handling of quadratic-slope modification
+        self.c2_neg, self.c0_neg = None, None # params only needed for quadratic-derivative modification
+        self.c2_pos, self.c0_pos = None, None # params only needed for quadratic-derivative modification
+        if mod == "qua":
+            print("Quadratic-slope TTF modification currently only works with fixed tailparams and breaking points (TTFfix). Also, breaking points are computed automatically (overwriting user inputs for these parameters) to ensure invertibility.")
+
+            # compute a_neg and a_pos
+            print("Compute a_neg to ensure invertibility...")
+            a_neg_init = -torch.from_numpy(compute_a(neg_tail_init.numpy()))
+            print("Computed a_neg: ", a_neg_init)
+            print("Compute a_pos to ensure invertibility...")
+            a_pos_init = torch.from_numpy(compute_a(pos_tail_init.numpy()))
+            print("Computed a_pos: ", a_pos_init)
+
+            # compute c2 and c0 params
+            self.c2_neg, self.c0_neg = compute_c2_c0(-a_neg_init, neg_tail_init)
+            self.c2_pos, self.c0_pos = compute_c2_c0(a_pos_init, pos_tail_init)
+
+        # Specific handling of erfi modification
+        self.r_neg, self.t_neg = None, None # params only needed for erfi-based modification
+        self.r_pos, self.t_pos = None, None # params only needed for erfi-based modification
+        if mod == "erfi" and fix_params:
+            # compute r and t params one time for usage in forward and inverse passes
+            self.r_neg, self.t_neg = _compute_rt(-a_neg_init, neg_tail_init)
+            self.r_pos, self.t_pos = _compute_rt(a_pos_init, pos_tail_init)
+
+        # convert params to unconstrained versions
         self._unc_pos_tail = torch.nn.parameter.Parameter(inv_sftplus(pos_tail_init))
         self._unc_neg_tail = torch.nn.parameter.Parameter(inv_sftplus(neg_tail_init))
         self.shift = torch.nn.parameter.Parameter(shift_init)
         self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        self._unc_a_pos = torch.nn.parameter.Parameter(inv_sftplus(a_pos_init))
+        self._unc_a_neg = torch.nn.parameter.Parameter(inv_sftplus(-a_neg_init))
 
-        if fix:
-            self.fix_tails()
+        if fix_params:
+            self.fix_all()
 
-        self.hd_only = hd_only
-        self.mod = mod
-
-        assert mod in ["std", "lin", "erfi", "qua"]
-        assert not (mod in ["lin", "erfi"] and (a_neg is None or a_pos is None)), f"Missing a_neg / a_pos params for lin / erfi TTF transformation:\nGot mod = {mod}, a_pos = {a_pos}, a_neg = {a_neg}."
-
-        if a_neg is not None:
-            self.a_neg = a_neg
-        if a_pos is not None:
-            self.a_pos = a_pos
-
-        # Specific handling of quadratic-slope modification
-        if mod == "qua":
-            print("Quadratic-slope TTF modification currently only works with fixed tailparams (TTFfix).")
-            self.fix_tails()
-
-            # compute a_neg and a_pos if necessary
-            if a_neg is None:
-                print("No a_neg param was given. Compute with compute_a...")
-                self.a_neg = -torch.from_numpy(compute_a(self.neg_tail.numpy()))
-                print("a_neg: ", self.a_neg)
-            if a_pos is None:
-                print("No a_pos param was given. Compute with compute_a...")
-                self.a_pos = torch.from_numpy(compute_a(self.pos_tail.numpy()))
-                print("a_pos: ", self.a_pos)
-
-            # compute c2 and c0 params
-            self.c2_neg, self.c0_neg = compute_c2_c0(-self.a_neg, self.neg_tail)
-            self.c2_pos, self.c0_pos = compute_c2_c0(self.a_pos, self.pos_tail)
-
-        # Specific handling of erfi modification
-        if mod == "erfi" and fix:
-            # compute r and t params
-            self.r_neg, self.t_neg = _compute_rt(-self.a_neg, self.neg_tail)
-            self.r_pos, self.t_pos = _compute_rt(self.a_pos, self.pos_tail)
+        else:
+            if mod == "qua":
+                print("Quadratic-derivative TTF: Fix tailparams and breaking points.")
+                self.fix_tails()
+                self.fix_a()
 
     @property
     def pos_tail(self) -> torch.Tensor:
@@ -2272,11 +2275,42 @@ class ModifiedTailAffineMarginalTransform(Transform):
     def scale(self) -> torch.Tensor:
         return 1e-3 + softplus(self._unc_scale)
 
+    @property
+    def a_pos(self) -> torch.Tensor:
+        return softplus(self._unc_a_pos)
+
+    @property
+    def a_neg(self) -> torch.Tensor:
+        return -softplus(self._unc_a_neg)
+
     def fix_tails(self):
-        # freeze only the parameters related to the tail
+        """Freeze tailparams."""
         self._unc_pos_tail.requires_grad = False
         self._unc_neg_tail.requires_grad = False
         print("Fixed tailparams.")
+
+    def fix_shift(self):
+        """Freeze location params."""
+        self.shift.requires_grad = False
+        print("Fixed location params.")
+
+    def fix_scale(self):
+        """Freeze scale params."""
+        self._unc_scale.requires_grad = False
+        print("Fixed scale params.")
+
+    def fix_a(self):
+        """Freeze breakpoints."""
+        self._unc_a_pos.requires_grad = False
+        self._unc_a_neg.requires_grad = False
+        print("Fixed breakpoint params.")
+
+    def fix_all(self):
+        """Fix all transformation parameters."""
+        self.fix_tails()
+        self.fix_shift()
+        self.fix_scale()
+        self.fix_a()
 
     def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -2288,13 +2322,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 x (torch.Tensor): transformed tensor (shape: [batch, features]).
                 lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
         """
-        assert z.ndim == 2, (
-            f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor "
-            f"with shape {z.shape}"
-        )
-        assert z.shape[1] == self.features, (
-                f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
-        )
+        assert z.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor with shape {z.shape}"
+        assert z.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
 
         if not self.hd_only:
             # All directions will be transformed
@@ -2303,14 +2332,14 @@ class ModifiedTailAffineMarginalTransform(Transform):
             elif self.mod == "lin":
                 x, lad = r_lin_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
                 x, lad = r_erfi_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
                 x, lad = r_qua_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
 
         else:
-            # transform only in heavy-tailed directions by using boolean masks and the appropriate functions
+            # transform only in heavy-tailed directions by using masks and the appropriate functions
             x = z.clone()
             lad = torch.zeros_like(z)
 
@@ -2329,8 +2358,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 if self.mask_hh.any():
                     x[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
                     x[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
                 if self.mask_hl.any():
@@ -2339,11 +2368,11 @@ class ModifiedTailAffineMarginalTransform(Transform):
                     x[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
                 if self.mask_lh.any():
-                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])  # type: ignore
                 if self.mask_hl.any():
-                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl]) # type: ignore
                 if self.mask_hh.any():
-                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh]) # type: ignore
                 
         # Apply shift and scale
         x = self.shift + x * self.scale
@@ -2361,13 +2390,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 z (torch.Tensor): transformed tensor (shape: [batch, features]).
                 lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
         """
-        assert x.ndim == 2, (
-            f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor "
-            f"with shape {x.shape}"
-        )
-        assert x.shape[1] == self.features, (
-                f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
-        )
+        assert x.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor with shape {x.shape}"
+        assert x.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
 
         # Invert affine transformation
         x = (x - self.shift) / self.scale
@@ -2379,15 +2403,15 @@ class ModifiedTailAffineMarginalTransform(Transform):
             elif self.mod == "lin":
                 z, lad = r_lin_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
                 z, lad = r_erfi_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
                 z, lad = r_qua_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
 
         else:
             # transform only in heavy-tailed directions by using boolean masks and the appropriate functions
-            z = x.detach().clone()
+            z = x.clone()
             lad = torch.zeros_like(x)
 
             if self.mod == "std":
@@ -2405,8 +2429,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 if self.mask_hh.any():
                     z[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if self.fix else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if self.fix else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
                     z[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
                 if self.mask_hl.any():
@@ -2415,11 +2439,11 @@ class ModifiedTailAffineMarginalTransform(Transform):
                     z[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
             elif self.mod == "qua":
                 if self.mask_lh.any():
-                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh]) # type: ignore
                 if self.mask_hl.any():
-                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl])
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_qua_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], self.c0_neg[self.mask_hl], self.c2_neg[self.mask_hl]) # type: ignore
                 if self.mask_hh.any():
-                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh])
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_qua_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], self.c0_pos[self.mask_hh], self.c2_pos[self.mask_hh], self.c0_neg[self.mask_hh], self.c2_neg[self.mask_hh]) # type: ignore
 
         lad = lad - torch.log(self.scale)
         return z, lad.sum(dim=-1)
