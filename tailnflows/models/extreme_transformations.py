@@ -1,5 +1,6 @@
 import torch
 from torch.nn.functional import softplus, relu, sigmoid
+import normflows as nf
 from nflows.transforms.autoregressive import AutoregressiveTransform
 from nflows.transforms import made as made_module
 from nflows.transforms import Transform
@@ -32,6 +33,7 @@ PI = math.pi
 SQRT_PI = math.sqrt(PI)
 LOG_SQRT_PI = math.log(SQRT_PI)
 MIN_ERFC_INV = 1e-6
+
 
 def _const_like(x, val):
     """
@@ -154,23 +156,93 @@ def _small_erfcinv(log_g):
     return z
 
 
+# def _stable_erfcinv(x, log_x):
+#     with torch.no_grad():
+#         standard_x = torch.clamp(x, min=MIN_ERFC_INV, max=None)
+#         small_log_x = torch.clamp(log_x, min=None, max=torch.tensor(MIN_ERFC_INV, device=log_x.device).log())
+
+#     z = torch.where(
+#         x > MIN_ERFC_INV,
+#         -torch.special.ndtri(0.5 * standard_x) / x.new_tensor(SQRT_2),
+#         _small_erfcinv(small_log_x),
+#     )
+
+#     # Do one Newton step for better accuracy near the breaking point
+#     denom = -2.0 / x.new_tensor(SQRT_PI) * torch.exp(-z.square())
+#     denom = torch.where(denom == 0.0, torch.finfo(z.dtype).tiny, denom) # avoid devision by 0
+#     z = z - (torch.special.erfc(z) - x) / denom
+
+#     return z
+
 def _stable_erfcinv(x, log_x):
     with torch.no_grad():
         standard_x = torch.clamp(x, min=MIN_ERFC_INV, max=None)
         small_log_x = torch.clamp(log_x, min=None, max=torch.tensor(MIN_ERFC_INV, device=log_x.device).log())
 
-    z = torch.where(
+    return torch.where(
         x > MIN_ERFC_INV,
-        -torch.special.ndtri(0.5 * standard_x) / x.new_tensor(SQRT_2),
+        -torch.special.ndtri(0.5 * standard_x) / SQRT_2,
         _small_erfcinv(small_log_x),
     )
 
-    # Do one Newton step for better accuracy near the breaking point
-    denom = -2.0 / x.new_tensor(SQRT_PI) * torch.exp(-z.square())
-    denom = torch.where(denom == 0.0, torch.finfo(z.dtype).tiny, denom) # avoid devision by 0
-    z = z - (torch.special.erfc(z) - x) / denom
+# class Erfc_Inv_Autograd(torch.autograd.Function):
+#     """
+#     Autograd-compatible implementation of erfc^{-1} for real inputs x.
+#     """
 
-    return z
+#     @staticmethod
+#     def forward(ctx, x:torch.Tensor) -> torch.Tensor:
+#         """
+#         Args:
+#             ctx: context object.
+#             x (torch.Tensor): Input tensor (real-valued).
+#         Returns:
+#             z (torch.Tensor): Output tensor z = erfc^{-1}(x) (real-valued).
+#         """
+
+#         # Compute forward pass
+#         log_x = torch.log(x)
+#         standard_x = torch.clamp(x, min=MIN_ERFC_INV, max=None)
+#         small_log_x = torch.clamp(log_x, min=None, max=torch.tensor(MIN_ERFC_INV, device=log_x.device).log())
+
+#         z = torch.where(
+#             x > MIN_ERFC_INV,
+#             -torch.special.ndtri(0.5 * standard_x) / x.new_tensor(SQRT_2),
+#             _small_erfcinv(small_log_x),
+#         )
+
+#         # Do one Newton step for better accuracy near the breaking point
+#         denom = -2.0 / x.new_tensor(SQRT_PI) * torch.exp(-z.square())
+#         denom = torch.where(denom == 0.0, torch.finfo(z.dtype).tiny, denom) # avoid devision by 0
+#         z = z - (torch.special.erfc(z) - x) / denom
+
+#         # Save input x and output z for backward pass
+#         ctx.save_for_backward(x, z)
+
+#         return z
+
+#     @staticmethod
+#     def backward(ctx, grad_z: torch.Tensor) -> tuple[torch.Tensor,]:
+#         """
+#         Args:
+#             ctx: context object.
+#             grad_z (torch.Tensor): loss gradient w.r.t. output z.
+#         Returns:
+#             (tuple): tuple[torch.Tensor,] containing
+#                 grad_x (torch.Tensor): loss gradient w.r.t. input x.
+#         """
+#         # Load input x and output z
+#         x, z = ctx.saved_tensors
+#         # Compute analytical derivate of erfc^{-1} function
+#         deriv = -(_const_like(x, SQRT_PI) / 2.0) * torch.exp(z*z)
+
+#         # Apply chain rule
+#         grad_x = grad_z * deriv
+
+#         return grad_x,
+
+# def _stable_erfcinv(x: torch.Tensor) -> torch.Tensor:
+#     return Erfc_Inv_Autograd.apply(x) # type:ignore
 
 
 # complex erf implementation
@@ -463,12 +535,11 @@ def compute_a(tail_param: np.ndarray) -> np.ndarray:
 
 def _extreme_transform_and_lad(z, tail_param):
     g = torch.special.erfc(z / SQRT_2)
-    log_g = torch.log(g)
-    x = torch.expm1(-tail_param * log_g) / tail_param
+    x = (torch.pow(g, -tail_param) - 1) / tail_param
 
     lad = torch.log(g) * (-tail_param - 1)
-    lad -= 0.5 * torch.square(z)
-    lad += torch.log(z.new_tensor(SQRT_2 / SQRT_PI))
+    lad = lad - 0.5 * torch.square(z)
+    lad = lad + torch.log(torch.tensor(SQRT_2 / SQRT_PI))
 
     return x, lad
 
@@ -490,10 +561,11 @@ def _ttf_sym_value_and_logprime(z: torch.Tensor, lam: torch.Tensor) -> tuple[tor
     log_g = torch.log(g)
     # Stable value
     val_abs = torch.expm1(-lam * log_g) / lam # (g^(-lam)-1)/lam
+    # val_abs = (torch.pow(g, -lam) - 1) / lam
     val = torch.sign(z) * val_abs
     # Log-derivative
-    logprime = (-lam - 1.0) * log_g - 0.5 * (u * u) + _const_like(u, 0.5 * math.log(2.0 / math.pi))
-    return val, logprime
+    lad = (-lam - 1.0) * log_g - 0.5 * (u * u) + _const_like(u, 0.5 * math.log(2.0 / math.pi))
+    return val, lad
 
 
 def _extreme_inverse_and_lad(x, tail_param):
@@ -502,8 +574,7 @@ def _extreme_inverse_and_lad(x, tail_param):
     g = torch.exp(log_g)
 
     # Optionally do erfcinv in float64 for stability
-    use64 = (x.dtype == torch.float32)
-    if use64:
+    if x.dtype == torch.float32:
         erfcinv_val64 = _stable_erfcinv(g.to(torch.float64), log_g.to(torch.float64))
         erfcinv_val = erfcinv_val64.to(x.dtype)
         lad_summand64 = erfcinv_val64 * erfcinv_val64
@@ -514,11 +585,25 @@ def _extreme_inverse_and_lad(x, tail_param):
 
     z = SQRT_2 * erfcinv_val
 
-    lad = (-1 - 1 / tail_param) * log_inner
-    lad += lad_summand
+    lad = (-1 - 1 / tail_param) * log_inner + lad_summand
     lad += torch.log(x.new_tensor(SQRT_PI / SQRT_2))
 
     return z, lad
+
+# def _extreme_inverse_and_lad(x, tail_param):
+#     inner = 1 + tail_param * x
+#     g = torch.pow(inner, -1 / tail_param)
+#     log_g = -torch.log(inner) / tail_param
+#     erfcinv_val = _stable_erfcinv(g, log_g)
+#     # erfcinv_val = _stable_erfcinv(g)
+
+#     z = SQRT_2 * erfcinv_val
+
+#     lad = (-1 - 1 / tail_param) * torch.log(inner)
+#     lad += torch.square(erfcinv_val)
+#     lad += torch.log(torch.tensor(SQRT_PI / SQRT_2))
+
+#     return z, lad
 
 
 def _ttf_sym_inverse_and_logprime(x: torch.Tensor, lam: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -536,24 +621,32 @@ def _ttf_sym_inverse_and_logprime(x: torch.Tensor, lam: torch.Tensor) -> tuple[t
     """
     s = torch.sign(x)
     u = torch.abs(x)
-    inner = 1.0 + lam * u
     log_inner = torch.log1p(lam * u)
     log_g = -log_inner / lam
     g = torch.exp(log_g)
 
     # Stable erfcinv using ndtri; for very small g, upcast to float64
-    def _erfcinv_from_erfc(g):
-        # erfcinv(g) = -ndtri(0.5*g) / √2
-        return -torch.special.ndtri(0.5 * g) / _const_like(g, math.sqrt(2.0))
+    # def _erfcinv_from_erfc(g):
+    #     # erfcinv(g) = -ndtri(0.5*g) / √2
+    #     return -torch.special.ndtri(0.5 * g) / _const_like(g, math.sqrt(2.0))
+
+    # if x.dtype == torch.float32:
+    #     E = _erfcinv_from_erfc(g.to(torch.float64)).to(x.dtype)
+    # else:
+    #     E = _erfcinv_from_erfc(g)
 
     if x.dtype == torch.float32:
-        E = _erfcinv_from_erfc(g.to(torch.float64)).to(x.dtype)
+        erfcinv_val64 = _stable_erfcinv(g.to(torch.float64), log_g.to(torch.float64))
+        erfcinv_val = erfcinv_val64.to(x.dtype)
+        lad_summand64 = erfcinv_val64 * erfcinv_val64
+        lad_summand = lad_summand64.to(x.dtype)
     else:
-        E = _erfcinv_from_erfc(g)
+        erfcinv_val = _stable_erfcinv(g, log_g)
+        lad_summand = erfcinv_val * erfcinv_val
 
-    z = s * _const_like(x, math.sqrt(2.0)) * E
-    logprime = (-1.0 - 1.0 / lam) * torch.log(inner) + (E * E) + _const_like(x, 0.5 * math.log(math.pi / 2.0))
-    return z, logprime
+    z = s * _const_like(x, math.sqrt(2.0)) * erfcinv_val
+    lad = (-1.0 - 1.0 / lam) * log_inner + lad_summand + _const_like(x, 0.5 * math.log(math.pi / 2.0))
+    return z, lad
 
 
 def neg_extreme_transform_and_lad(z, tail_param):
@@ -1228,7 +1321,7 @@ def r_qua_both_forward(z, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
     )
 
     # Constants c_- and c_+
-    c_minus = beta_pm * (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_minus = beta_pm * ((1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg)
     c_plus = beta_mp * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
 
     # Regions
@@ -1316,7 +1409,7 @@ def r_qua_both_inverse(x, lam_pos, lam_neg, a_pos, a_neg, c0_pos, c2_pos, c0_neg
     )
 
     # Constants c_- and c_+
-    c_minus = beta_pm * (1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg
+    c_minus = beta_pm * ((1.0 / 3.0) * c2_neg * (a_neg ** 3) + c0_neg * a_neg)
     c_plus = beta_mp * ((1.0 / 3.0) * c2_pos * (a_pos ** 3) + c0_pos * a_pos)
 
     # Regions
@@ -1896,7 +1989,7 @@ def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
 # ----- Transformation classes implementing the above trafos ----- #
 ####################################################################
 
-class TailMarginalTransform(Transform):
+class TailMarginalTransform(nf.flows.Flow):
     """
     Implement marginal TTF layer (without loc/scale parameters)
     """
@@ -2059,7 +2152,7 @@ class RQSMarginalTransform(Transform):
         return outputs, logabsdet.sum(dim=-1)
 
 
-class TailAffineMarginalTransform(Transform):
+class TailAffineMarginalTransform(nf.flows.Flow):
     """
     Implement marginal TTF layer (with loc and scale)
     """
@@ -2135,7 +2228,7 @@ class TailAffineMarginalTransform(Transform):
 
 
 
-class ModifiedTailAffineMarginalTransform(Transform):
+class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
     """
     Implement marginal TTF layer with (optionally) modified TTF trafos and (optionally) loc and scale.
     """
@@ -2198,6 +2291,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
             # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
             pos_mask = pos_tail_init == 0.0
             neg_mask = neg_tail_init == 0.0
+            pos_tail_init = pos_tail_init.clone()
+            neg_tail_init = neg_tail_init.clone()
             pos_tail_init[pos_mask] = 0.001
             neg_tail_init[neg_mask] = 0.001
 
@@ -2239,12 +2334,14 @@ class ModifiedTailAffineMarginalTransform(Transform):
             self.c2_pos, self.c0_pos = compute_c2_c0(a_pos_init, pos_tail_init)
 
         # Specific handling of erfi modification
-        self.r_neg, self.t_neg = None, None # params only needed for erfi-based modification
-        self.r_pos, self.t_pos = None, None # params only needed for erfi-based modification
         if mod == "erfi" and fix_params:
             # compute r and t params one time for usage in forward and inverse passes
-            self.r_neg, self.t_neg = _compute_rt(-a_neg_init, neg_tail_init)
-            self.r_pos, self.t_pos = _compute_rt(a_pos_init, pos_tail_init)
+            r_neg, t_neg = _compute_rt(-a_neg_init, neg_tail_init)
+            r_pos, t_pos = _compute_rt(a_pos_init, pos_tail_init)
+            self.register_buffer("r_neg", r_neg)
+            self.register_buffer("t_neg", t_neg)
+            self.register_buffer("r_pos", r_pos)
+            self.register_buffer("t_pos", t_pos)
 
         # convert params to unconstrained versions
         self._unc_pos_tail = torch.nn.parameter.Parameter(inv_sftplus(pos_tail_init))
@@ -2258,6 +2355,9 @@ class ModifiedTailAffineMarginalTransform(Transform):
             self.fix_all()
 
         else:
+            if mod == "std":
+                print("Standard TTF: No breaking points needed, thus fixed.")
+                self.fix_a()
             if mod == "qua":
                 print("Quadratic-derivative TTF: Fix tailparams and breaking points.")
                 self.fix_tails()
@@ -2277,11 +2377,13 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
     @property
     def a_pos(self) -> torch.Tensor:
-        return softplus(self._unc_a_pos)
+        if self.mod != "std":
+            return softplus(self._unc_a_pos)
 
     @property
     def a_neg(self) -> torch.Tensor:
-        return -softplus(self._unc_a_neg)
+        if self.mod != "std":
+            return -softplus(self._unc_a_neg)
 
     def fix_tails(self):
         """Freeze tailparams."""
@@ -2312,7 +2414,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
         self.fix_scale()
         self.fix_a()
 
-    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, z: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute with specified transformation and apply shift & scale.
         Args:
@@ -2322,6 +2424,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 x (torch.Tensor): transformed tensor (shape: [batch, features]).
                 lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
         """
+
         assert z.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor with shape {z.shape}"
         assert z.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
 
@@ -2332,8 +2435,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
             elif self.mod == "lin":
                 x, lad = r_lin_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 x, lad = r_erfi_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
                 x, lad = r_qua_both_forward(z, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
@@ -2358,8 +2461,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 if self.mask_hh.any():
                     x[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
                     x[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
                 if self.mask_hl.any():
@@ -2380,7 +2483,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
         return x, lad.sum(dim=-1)
 
-    def inverse(self, x: torch.Tensor):
+    def inverse(self, x: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute with specified transformation and take into account shift & scale.
         Args:
@@ -2403,8 +2506,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
             elif self.mod == "lin":
                 z, lad = r_lin_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg)
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 z, lad = r_erfi_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, r_pos, t_pos, r_neg, t_neg)
             elif self.mod == "qua":
                 z, lad = r_qua_both_inverse(x, self.pos_tail, self.neg_tail, self.a_pos, self.a_neg, self.c0_pos, self.c2_pos, self.c0_neg, self.c2_neg)
@@ -2429,8 +2532,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 if self.mask_hh.any():
                     z[:, self.mask_hh], lad[:, self.mask_hh] = r_lin_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])
             elif self.mod == "erfi":
-                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (self.r_pos is not None and self.t_pos is not None) else _compute_rt(self.a_pos, self.pos_tail)
-                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (self.r_neg is not None and self.t_neg is not None) else _compute_rt(-self.a_neg, self.neg_tail)
+                (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
+                (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
                     z[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
                 if self.mask_hl.any():

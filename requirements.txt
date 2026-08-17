@@ -13,3 +13,4 @@ statsmodels
 nflows @ git+https://github.com/Tennessee-Wallaceh/nflows
 marginal_tail_adaptive_flows @ git+https://github.com/Tennessee-Wallaceh/marginalTailAdaptiveFlow
 torch_erf @ git+https://github.com/redsnic/torch_erf/
+normflows
