@@ -1,6 +1,5 @@
 import torch
 from torch.nn.functional import softplus, relu, sigmoid
-import normflows as nf
 from nflows.transforms.autoregressive import AutoregressiveTransform
 from nflows.transforms import made as made_module
 from nflows.transforms import Transform
@@ -1989,7 +1988,7 @@ def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
 # ----- Transformation classes implementing the above trafos ----- #
 ####################################################################
 
-class TailMarginalTransform(nf.flows.Flow):
+class TailMarginalTransform(Transform):
     """
     Implement marginal TTF layer (without loc/scale parameters)
     """
@@ -2152,7 +2151,7 @@ class RQSMarginalTransform(Transform):
         return outputs, logabsdet.sum(dim=-1)
 
 
-class TailAffineMarginalTransform(nf.flows.Flow):
+class TailAffineMarginalTransform(Transform):
     """
     Implement marginal TTF layer (with loc and scale)
     """
@@ -2228,7 +2227,7 @@ class TailAffineMarginalTransform(nf.flows.Flow):
 
 
 
-class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
+class ModifiedTailAffineMarginalTransform(Transform):
     """
     Implement marginal TTF layer with (optionally) modified TTF trafos and (optionally) loc and scale.
     """
@@ -2316,8 +2315,6 @@ class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
         self.mod = mod
 
         # Specific handling of quadratic-slope modification
-        self.c2_neg, self.c0_neg = None, None # params only needed for quadratic-derivative modification
-        self.c2_pos, self.c0_pos = None, None # params only needed for quadratic-derivative modification
         if mod == "qua":
             print("Quadratic-slope TTF modification currently only works with fixed tailparams and breaking points (TTFfix). Also, breaking points are computed automatically (overwriting user inputs for these parameters) to ensure invertibility.")
 
@@ -2330,8 +2327,12 @@ class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
             print("Computed a_pos: ", a_pos_init)
 
             # compute c2 and c0 params
-            self.c2_neg, self.c0_neg = compute_c2_c0(-a_neg_init, neg_tail_init)
-            self.c2_pos, self.c0_pos = compute_c2_c0(a_pos_init, pos_tail_init)
+            c2_neg, c0_neg = compute_c2_c0(-a_neg_init, neg_tail_init)
+            c2_pos, c0_pos = compute_c2_c0(a_pos_init, pos_tail_init)
+            self.register_buffer("c2_neg", c2_neg)
+            self.register_buffer("c0_neg", c0_neg)
+            self.register_buffer("c2_pos", c2_pos)
+            self.register_buffer("c0_pos", c0_pos)
 
         # Specific handling of erfi modification
         if mod == "erfi" and fix_params:
@@ -2377,13 +2378,11 @@ class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
 
     @property
     def a_pos(self) -> torch.Tensor:
-        if self.mod != "std":
-            return softplus(self._unc_a_pos)
+        return softplus(self._unc_a_pos)
 
     @property
     def a_neg(self) -> torch.Tensor:
-        if self.mod != "std":
-            return -softplus(self._unc_a_neg)
+        return -softplus(self._unc_a_neg)
 
     def fix_tails(self):
         """Freeze tailparams."""
@@ -2464,11 +2463,11 @@ class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
-                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh]) # type: ignore
                 if self.mask_hl.any():
-                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_forward(z[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl]) # type: ignore
                 if self.mask_hh.any():
-                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_forward(z[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh]) # type: ignore
             elif self.mod == "qua":
                 if self.mask_lh.any():
                     x[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_forward(z[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh])  # type: ignore
@@ -2535,11 +2534,11 @@ class ModifiedTailAffineMarginalTransform(nf.flows.Flow):
                 (r_pos, t_pos) = (self.r_pos, self.t_pos) if (hasattr(self, 'r_pos') and hasattr(self, 't_pos')) else _compute_rt(self.a_pos, self.pos_tail)
                 (r_neg, t_neg) = (self.r_neg, self.t_neg) if (hasattr(self, 'r_neg') and hasattr(self, 't_neg')) else _compute_rt(-self.a_neg, self.neg_tail)
                 if self.mask_lh.any():
-                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh])
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = r_erfi_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], r_pos[self.mask_lh], t_pos[self.mask_lh]) # type: ignore
                 if self.mask_hl.any():
-                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl])
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = r_erfi_left_inverse(x[:, self.mask_hl], self.neg_tail[self.mask_hl], self.a_neg[self.mask_hl], r_neg[self.mask_hl], t_neg[self.mask_hl]) # type: ignore
                 if self.mask_hh.any():
-                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh])
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = r_erfi_both_inverse(x[:, self.mask_hh], self.pos_tail[self.mask_hh], self.neg_tail[self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh], r_pos[self.mask_hh], t_pos[self.mask_hh], r_neg[self.mask_hh], t_neg[self.mask_hh]) # type: ignore
             elif self.mod == "qua":
                 if self.mask_lh.any():
                     z[:, self.mask_lh], lad[:, self.mask_lh] = r_qua_right_inverse(x[:, self.mask_lh], self.pos_tail[self.mask_lh], self.a_pos[self.mask_lh], self.c0_pos[self.mask_lh], self.c2_pos[self.mask_lh]) # type: ignore
