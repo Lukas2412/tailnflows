@@ -2234,6 +2234,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
     def __init__(
         self,
         features: int,
+        device: Optional[torch.device] = None,
         pos_tail_init: Optional[torch.Tensor] = None,
         neg_tail_init: Optional[torch.Tensor] = None,
         shift_init: Optional[torch.Tensor] = None,
@@ -2250,6 +2251,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
             The tailparams given here a GPD shape params, which are reciprocal to the corresponding tail indices / degrees of freedom (df)!
         Args:
             features (int):
+            device (torch.device, optional): device on which to store transformation params. If None, defaults to the device of tail inits.
             pos_tail_init (torch.Tensor): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
             neg_tail_init (torch.Tensor): tailparams for each marginal transformation for neg directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
             shift_init (torch.Tensor): shift values for each marginal transformation (shape: [features]).
@@ -2269,22 +2271,28 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 LOW_TAIL_INIT, HIGH_TAIL_INIT
             ).sample([features])
 
+        # default result
+        if device is None:
+            device = pos_tail_init.device
+        self.device = device
+
         if neg_tail_init is None:
             neg_tail_init = torch.distributions.Uniform(
                 LOW_TAIL_INIT, HIGH_TAIL_INIT
             ).sample([features])
+        neg_tail_init = neg_tail_init.to(self.device)
 
         if a_pos_init is None:
-            a_pos_init = torch.ones([features])
+            a_pos_init = torch.ones([features], device=self.device)
 
         if a_neg_init is None:
-            a_neg_init = -torch.ones([features])
+            a_neg_init = -torch.ones([features], device=self.device)
 
         if shift_init is None:
-            shift_init = torch.zeros([features])
+            shift_init = torch.zeros([features], device=self.device)
 
         if scale_init is None:
-            scale_init = torch.ones([features])
+            scale_init = torch.ones([features], device=self.device)
 
         if not hd_only:
             # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
@@ -2320,10 +2328,10 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
             # compute a_neg and a_pos
             print("Compute a_neg to ensure invertibility...")
-            a_neg_init = -torch.from_numpy(compute_a(neg_tail_init.numpy()))
+            a_neg_init = -torch.from_numpy(compute_a(neg_tail_init.detach().cpu().numpy())).to(self.device)
             print("Computed a_neg: ", a_neg_init)
             print("Compute a_pos to ensure invertibility...")
-            a_pos_init = torch.from_numpy(compute_a(pos_tail_init.numpy()))
+            a_pos_init = torch.from_numpy(compute_a(pos_tail_init.detach().cpu().numpy())).to(self.device)
             print("Computed a_pos: ", a_pos_init)
 
             # compute c2 and c0 params
