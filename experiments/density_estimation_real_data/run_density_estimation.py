@@ -12,6 +12,16 @@ from tailnflows.utils import add_raw_data, get_experiment_output_path, load_raw_
 from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse_and_lad
 
 DEFAULT_DTYPE = torch.float32
+torch.set_default_dtype(DEFAULT_DTYPE)
+
+gpu_ix = 3
+if torch.cuda.is_available():
+    torch.set_default_device(f"cuda:{gpu_ix}")
+    DEFAULT_DEVICE = torch.device(f"cuda:{gpu_ix}")
+else:
+    torch.set_default_device("cpu")
+    DEFAULT_DEVICE = torch.device("cpu")
+
 
 # NOTE: I think this script is supposed to only run fama5, insurance and sp500 experiments (not climdex!)
 
@@ -87,6 +97,30 @@ def ttf_rqs_fix(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
         final_rotation="lu",
     )
 
+
+def ttf_rqs_mod(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final modified TTF transformation with tail params given by dfs.
+        NOTE: Edit model_kwargs to specify TTF modifications! """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=True,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            hd_only=False,
+            mod="qua",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=True,
+        ),
+        final_rotation="lu",
+    )
+
+
+
 def gtaf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0] """
     return flows.build_gtaf(
@@ -134,6 +168,7 @@ def comet(dim, dfs, model_config, x_trn):
 model_definitions = {
     "ttf": ttf_rqs,
     "ttf_fix": ttf_rqs_fix,
+    "ttf_mod": ttf_rqs_mod,
     "gtaf": gtaf_rqs,
     "mtaf": mtaf_rqs,
     "normal":  normal,
@@ -154,21 +189,17 @@ def run_experiment(
     opt_params: dict, # params for optimizer
     model_config: dict, # hyperparams for model architecture
     experiment_ix=None, # Not used
-    gpu_ix=0,
 ):
     # general setup
     out_path = f"{data_source}/{experiment_name}"
     loss_path = f"{get_experiment_output_path()}/{out_path}/losses"
 
-    if torch.cuda.is_available():
-        torch.set_default_device(f"cuda:{gpu_ix}")
-
-    torch.set_default_dtype(DEFAULT_DTYPE)
     torch.manual_seed(seed)
 
     # prepare data
     x = real_data_sources[data_source]()
     n = x.shape[0]
+    print(f"Num data samps: {n}")
     dim = x.shape[1]
 
     tail_path = f'{get_data_path()}/splits/{data_source}/{split}'
@@ -279,22 +310,23 @@ def configured_experiments():
     model_labels = [
         # "normal", 
         "ttf_fix", 
+        "ttf_mod",
         # "ttf", 
         # "comet", 
         # "mtaf", 
         # "gtaf"
     ]
 
-    experiment_name = "2026-08-01-de-insurance-split0-run2"
+    experiment_name = "2026-08-26-de-sp500-try01"
     # data_sources = ['fama5', 'sp500', 'insurance']
-    data_sources = ['insurance']
+    data_sources = ['sp500']
 
     opt_params = {
-        "lr": 5e-3, 
-        "num_steps": 1_00, 
+        "lr": 5e-4, 
+        "num_steps": 3_000, 
         "batch_size": 512,
         "early_stop_patience": 1_00,
-        "eval_period": 1, # period for computing validation loss
+        "eval_period": 20, # period for computing validation loss
         "lr_scheduler": "cosine_anneal_wr",
     }
 
@@ -306,9 +338,8 @@ def configured_experiments():
 
     experiments = []
     for data_source in data_sources:
-        # for repeat_seed in [20, 30, 40]:
-        # for repeat_seed in range(2100, 3100, 100):
-        for repeat_seed in [10]:
+        for split in range(10):
+            repeat_seed = 17*split
             for depth in [1]:
                 for model_label in model_labels:
                     
@@ -317,7 +348,7 @@ def configured_experiments():
                     experiments.append(dict(
                         data_source=data_source,
                         experiment_name=experiment_name,
-                        split=0, # NOTE: Edit to use other split?
+                        split=split,
                         seed=repeat_seed,
                         model_label=model_label,
                         opt_params=opt_params,
@@ -329,4 +360,6 @@ def configured_experiments():
     # run_experiment(**experiments[0])
 
 if __name__ == "__main__":
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     configured_experiments()
