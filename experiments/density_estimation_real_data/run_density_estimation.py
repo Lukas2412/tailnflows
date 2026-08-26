@@ -3,6 +3,8 @@ from functools import partial
 
 import torch
 
+from nflows.transforms.base import Transform
+
 from tailnflows.targets.data import real_data_sources
 from tailnflows.models import flows
 from tailnflows.train import data_fit
@@ -17,7 +19,8 @@ DEFAULT_DTYPE = torch.float32
 Model specifications
 """
 
-def base_rqs_spec(dim, model_config):
+def base_rqs_spec(dim: int, model_config: dict) -> list[Transform]:
+    """ Builds a list of transformations representing a NSF with {depth} rational quadratic spline (rqs) layers and LU layers. """
     return flows.base_nsf_transform(
         dim, 
         num_bins=model_config.get('num_bins', 5),
@@ -27,7 +30,8 @@ def base_rqs_spec(dim, model_config):
         u_linear_layer=True
     )
 
-def normal(dim, dfs, model_config):
+def normal(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model without a final tail transformation. """
     return flows.build_base_model(
         dim, 
         use="density_estimation", 
@@ -35,7 +39,7 @@ def normal(dim, dfs, model_config):
         final_rotation="lu",
     )
 
-def get_preprocessor(dfs):
+def get_preprocessor(dfs: list[float]): # Used for training a normal model with an initial Gaussian to Student-t transformation.
     def _preprocess(x):
         z, lad = t_to_norm_inverse_and_lad(
             x.cpu(), 
@@ -48,7 +52,9 @@ def get_preprocessor(dfs):
 
     return _preprocess
 
-def ttf_rqs(dim, dfs, model_config):
+def ttf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final TTF transformation with learnable tail params, initialized by sampling uniformly from [0.05, 1.0].
+        As the tail param are initialized randomly, the dfs argument is non-used. """
     return flows.build_ttf_m(
         dim,
         use="density_estimation",
@@ -66,7 +72,9 @@ def ttf_rqs(dim, dfs, model_config):
     )
 
 
-def ttf_rqs_fix(dim, dfs, model_config):
+def ttf_rqs_fix(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final TTF transformation with non-learnable tail params,
+        initialized symmetrically for pos and neg tails given by the values in dfs. """
     return flows.build_ttf_m(
         dim,
         use="density_estimation",
@@ -79,7 +87,8 @@ def ttf_rqs_fix(dim, dfs, model_config):
         final_rotation="lu",
     )
 
-def gtaf_rqs(dim, dfs, model_config):
+def gtaf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0] """
     return flows.build_gtaf(
         dim,
         use="density_estimation",
@@ -92,7 +101,9 @@ def gtaf_rqs(dim, dfs, model_config):
     )
 
 
-def mtaf_rqs(dim, dfs, model_config):
+def mtaf_rqs(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF with a fixed base distribution consisting of normal distributions (for light-tailed marginals)
+        and Student-t distributions with degrees of freedom given by dfs. """
     return flows.build_mtaf(
         dim,
         use="density_estimation",
@@ -135,21 +146,22 @@ Experiment code
 """
 
 def run_experiment(
-    data_source,
-    experiment_name,
-    split,
-    seed,
-    model_label,
-    opt_params,
-    model_config,
-    experiment_ix=None,
+    data_source: str, # "insurance", "fama5" or "sp500"
+    experiment_name: str,
+    split: int, # data split
+    seed: int, # RNG seed
+    model_label: str, # a key string in model_definitions
+    opt_params: dict, # params for optimizer
+    model_config: dict, # hyperparams for model architecture
+    experiment_ix=None, # Not used
+    gpu_ix=0,
 ):
     # general setup
     out_path = f"{data_source}/{experiment_name}"
     loss_path = f"{get_experiment_output_path()}/{out_path}/losses"
 
     if torch.cuda.is_available():
-        torch.set_default_device("cuda")
+        torch.set_default_device(f"cuda:{gpu_ix}")
 
     torch.set_default_dtype(DEFAULT_DTYPE)
     torch.manual_seed(seed)
@@ -191,7 +203,6 @@ def run_experiment(
         model_fcn = partial(model_fcn, x_trn=x_trn)
 
     label = f'{data_source}-{split}-{model_label}'
-
     
     model = model_fcn(
         dim,
@@ -263,14 +274,15 @@ optimisation_overrides = {
 }
 
 def configured_experiments():
+    """ Run several experiments in parallel by modifying the following dictionaries. """
 
     model_labels = [
-        "normal", 
+        # "normal", 
         "ttf_fix", 
-        "ttf", 
-        "comet", 
-        "mtaf", 
-        "gtaf"
+        # "ttf", 
+        # "comet", 
+        # "mtaf", 
+        # "gtaf"
     ]
 
     experiment_name = "2026-08-01-de-insurance-split0-run2"

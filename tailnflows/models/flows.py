@@ -406,7 +406,17 @@ class ExperimentFlow(Flow):
         final_rotation: FinalRotation,
         constraint_transformation: Optional[Transform] = None,
     ):
-        dim = base_distribution._shape[0]
+        """ Class for flow models to be used in experiments.
+
+        Args:
+            use (str): "density_estimation" or "variational_inference"-
+            base_distribution (Distribution): Base distribution of the flow model.
+            base_transformation_init (Optional[BaseTransform]): Composed transformation given by the flow model (without final tail transform).
+            final_transformation (Transform): Final tail transformation.
+            final_rotation (FinalRotation): Final rotation layer (householder or LU).
+            constraint_transformation (Optional[Transform], optional): Defaults to None.
+        """
+        dim = base_distribution._shape[0] # type: ignore
         if base_transformation_init is None:
             base_transformations = []
         else:
@@ -501,7 +511,8 @@ def build_ttf_m(
     constraint_transformation: Optional[Transform] = None,
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
-):
+) -> ExperimentFlow:
+    """ Builds a TTF model. """
     # configure model specific settings
     pos_tail_init = model_kwargs.get("pos_tail_init", None)
     neg_tail_init = model_kwargs.get("neg_tail_init", None)
