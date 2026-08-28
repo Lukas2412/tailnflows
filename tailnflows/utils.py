@@ -4,7 +4,7 @@ import subprocess
 import pickle
 from typing import Any
 import torch
-import multiprocessing as mp
+import torch.multiprocessing as mp
 import io
 
 
