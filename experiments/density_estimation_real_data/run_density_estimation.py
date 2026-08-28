@@ -23,10 +23,6 @@ else:
     torch.set_default_device("cpu")
     DEFAULT_DEVICE = torch.device("cpu")
 
-
-# NOTE: I think this script is supposed to only run fama5, insurance and sp500 experiments (not climdex!)
-# TODO: Make this work for climate and run all experiments!
-
 """
 Model specifications
 """
@@ -70,7 +66,7 @@ def get_preprocessor(dfs: list[float]): # Used for training a normal model with 
     return _preprocess
 
 
-def ttf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final TTF transformation with learnable tail params."""
     return flows.build_ttf_m(
         dim,
@@ -78,14 +74,14 @@ def ttf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=False,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
         ),
         final_rotation="lu",
     )
 
 
-def ttf_rqs_fix(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_fix(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final TTF transformation with non-learnable tail params,
         initialized symmetrically for pos and neg tails given by the values in dfs. """
     return flows.build_ttf_m(
@@ -94,14 +90,14 @@ def ttf_rqs_fix(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=True,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
         ),
         final_rotation="lu",
     )
 
 
-def ttf_rqs_hdonly(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_hdonly(dim: int, metadata, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final TTF transformation (only in heavy-tailed directions) with learnable tail params, initialized by sampling uniformly from [0.05, 1.0].
         As the tail param are initialized randomly, the dfs argument is non-used. """
     return flows.build_ttf_mod_m(
@@ -111,8 +107,8 @@ def ttf_rqs_hdonly(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="std",
             a_pos_init=None,
@@ -123,7 +119,7 @@ def ttf_rqs_hdonly(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
     )
 
 
-def ttf_rqs_lin(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final linear modified TTF transformation with learnable tail params given by dfs. """
     return flows.build_ttf_mod_m(
         dim,
@@ -132,8 +128,8 @@ def ttf_rqs_lin(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
             hd_only=False,
             mod="lin",
             a_pos_init=None,
@@ -144,7 +140,7 @@ def ttf_rqs_lin(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
     )
 
 
-def ttf_rqs_lin_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final linear modified TTF transformation (only in heavy-tailed directions)
     with learnable tail params given by dfs. """
     return flows.build_ttf_mod_m(
@@ -154,8 +150,8 @@ def ttf_rqs_lin_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experim
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="lin",
             a_pos_init=None,
@@ -166,7 +162,7 @@ def ttf_rqs_lin_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experim
     )
 
 
-def ttf_rqs_qua(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_qua(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final quadratic-derivative-modified TTF transformation with fixed tail params given by dfs. """
     return flows.build_ttf_mod_m(
         dim,
@@ -175,8 +171,8 @@ def ttf_rqs_qua(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
         model_kwargs=dict(
             fix_tails=True,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
             hd_only=False,
             mod="qua",
             a_pos_init=None,
@@ -187,7 +183,7 @@ def ttf_rqs_qua(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
     )
 
 
-def ttf_rqs_qua_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_qua_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final quadratic-derivative-modified TTF transformation (only in heavy-tailed directions)
     with fixed tail params given by dfs. """
     return flows.build_ttf_mod_m(
@@ -197,8 +193,8 @@ def ttf_rqs_qua_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experim
         model_kwargs=dict(
             fix_tails=True,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="qua",
             a_pos_init=None,
@@ -209,7 +205,7 @@ def ttf_rqs_qua_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experim
     )
 
 
-def ttf_rqs_erfi(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_erfi(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final erfi-modified TTF transformation with learnable tail params given by dfs. """
     return flows.build_ttf_mod_m(
         dim,
@@ -218,8 +214,8 @@ def ttf_rqs_erfi(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlo
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
             hd_only=False,
             mod="erfi",
             a_pos_init=None,
@@ -230,7 +226,7 @@ def ttf_rqs_erfi(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlo
     )
 
 
-def ttf_rqs_erfi_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def ttf_rqs_erfi_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF model with a final erfi-modified TTF transformation (in heavy-tailed directions only)
     with learnable tail params given by dfs. """
     return flows.build_ttf_mod_m(
@@ -240,8 +236,8 @@ def ttf_rqs_erfi_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experi
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="erfi",
             a_pos_init=None,
@@ -252,7 +248,7 @@ def ttf_rqs_erfi_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.Experi
     )
 
 
-def gtaf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+def gtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0] """
     return flows.build_gtaf(
         dim,
@@ -266,14 +262,14 @@ def gtaf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
     )
 
 
-def mtaf_rqs(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+def mtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF with a fixed base distribution consisting of normal distributions (for light-tailed marginals)
         and Student-t distributions with degrees of freedom given by dfs. """
     return flows.build_mtaf(
         dim,
         use="density_estimation",
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
-        model_kwargs=dict(fix_tails=True, tail_init=dfs['dfs']),
+        model_kwargs=dict(fix_tails=True, tail_init=metadata['dfs']),
         final_rotation="lu",
     )
 
@@ -318,7 +314,7 @@ Experiment code
 """
 
 def run_experiment(
-    data_source: str, # "insurance", "fama5" or "sp500"
+    data_source: str, # "insurance", "fama5", "sp500" or "climate"
     experiment_name: str,
     split: int, # data split
     seed: int, # RNG seed
@@ -333,11 +329,9 @@ def run_experiment(
 
     torch.manual_seed(seed)
 
-    # prepare data
-    x = real_data_sources[data_source]()
-    n = x.shape[0]
-    print(f"Num data samps: {n}")
-    dim = x.shape[1]
+    ####################################
+    # prepare train, val and test data #
+    ####################################
 
     tail_path = f'{get_data_path()}/splits/{data_source}/{split}'
     if not Path(f"{tail_path}.p").is_file():
@@ -345,39 +339,60 @@ def run_experiment(
             f"Split data not present at {tail_path}.p, either configure "
             "TAILNFLOWS_DATA_DIR, or run `python experiments/density_estimation_real_data/generate_splits.py`"
         )
-    
+
     splits_and_tail = load_raw_data(tail_path)["experiment_data"][0]
-    tail_and_scale = splits_and_tail["metadata"]
-    
-    trn_ix = splits_and_tail["split"]["trn"]
-    val_ix = splits_and_tail["split"]["val"]
-    tst_ix = splits_and_tail["split"]["tst"]
+    metadata = splits_and_tail["metadata"]
 
-    mean = torch.tensor(tail_and_scale["mean"])
-    scale = torch.tensor(tail_and_scale["std"])
+    if data_source == "climate":
+        # Load train/val/test split directly as normalized tensors
+        x_trn = splits_and_tail["split"]["x_trn"]
+        x_val = splits_and_tail["split"]["x_val"]
+        x_tst = splits_and_tail["split"]["x_tst"]
+        n = x_trn.shape[0] + x_val.shape[0] + x_tst.shape[0]
+        print(f"Num data samps: {n}")
+        dim = x_trn.shape[1]
 
-    x_trn = (x[trn_ix] - mean) / scale
-    x_val = (x[val_ix] - mean) / scale
-    x_tst = (x[tst_ix] - mean) / scale
+    else:
+        # Load whole data tensor and train/val/test indices. Then split and normalize.
+        x = real_data_sources[data_source]()
+        n = x.shape[0]
+        print(f"Num data samps: {n}")
+        dim = x.shape[1]
+        
+        trn_ix = splits_and_tail["split"]["trn"]
+        val_ix = splits_and_tail["split"]["val"]
+        tst_ix = splits_and_tail["split"]["tst"]
 
-    # create model and train
+        mean = torch.tensor(metadata["mean"])
+        scale = torch.tensor(metadata["std"])
+
+        x_trn = (x[trn_ix] - mean) / scale
+        x_val = (x[val_ix] - mean) / scale
+        x_tst = (x[tst_ix] - mean) / scale
+
+    ##########################
+    # create model and train #
+    ##########################
+
+    # Load preprocess if specified
     if model_label.endswith('preprocess'):
-        preprocessor = get_preprocessor(tail_and_scale["dfs"])
+        preprocessor = get_preprocessor(metadata["dfs"])
     else:
         preprocessor = None
-    
+
+    # Load the specified model
     model_fcn = model_definitions[model_label]
     if model_label == 'comet':
-        model_fcn = partial(model_fcn, x_trn=x_trn)
-
-    label = f'{data_source}-{split}-{model_label}'
-    
+        model_fcn = partial(model_fcn, x_trn=x_trn) # comet flow model function needs training data as additional argument
     model = model_fcn(
         dim,
-        tail_and_scale,
+        metadata,
         model_config,
     ).to(DEFAULT_DTYPE)
 
+    label = f'{data_source}-{split}-{model_label}'
+
+    # Train and evaluate model
     fit_data = data_fit.train(
         model,
         x_trn.to(DEFAULT_DTYPE),
@@ -387,8 +402,11 @@ def run_experiment(
         label=label,
         preprocess_transformation=preprocessor,
     )
-
     tst_loss, val_loss, tst_ix, losses, vlosses, steps, hook_data = fit_data
+
+    ################
+    # Save results #
+    ################
 
     loss_ix = add_raw_data(
         loss_path,
@@ -439,15 +457,22 @@ optimisation_overrides = {
         "eval_period": 25,
         "lr_scheduler": None,
     },
-    'insurance':{
+    'insurance': {
         "lr": 5e-4, 
         "num_steps": 2_000, 
         "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
         "lr_scheduler": None,
-    }
-
+    },
+    'climate': {
+        "lr": 1e-4, 
+        "num_steps": 20_000, 
+        "batch_size": 512,
+        "early_stop_patience": 5_00,
+        "eval_period": 25,
+        "lr_scheduler": "cosine_anneal_wr",
+    },
 }
 
 def configured_experiments():
@@ -469,9 +494,9 @@ def configured_experiments():
     ]
 
     experiment_name = "2026-08-31-de-all"
-    data_sources = ['fama5', 'sp500', 'insurance']
+    data_sources = ['climate', 'fama5', 'sp500', 'insurance']
 
-    opt_params = { # for climate TODO!
+    opt_params = { # currently will be overriden by optimization_overrides
         "lr": 1e-4, 
         "num_steps": 20_000, 
         "batch_size": 512,
