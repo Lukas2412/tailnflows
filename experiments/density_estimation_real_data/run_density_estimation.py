@@ -10,6 +10,7 @@ from tailnflows.models import flows
 from tailnflows.train import data_fit
 from tailnflows.utils import add_raw_data, get_experiment_output_path, load_raw_data, get_data_path, add_experiment_output_data, parallel_runner
 from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse_and_lad
+from tailnflows.models.extreme_transformations import NNKwargs, SpecifiedNNKwargs, configure_nn
 
 DEFAULT_DTYPE = torch.float32
 torch.set_default_dtype(DEFAULT_DTYPE)
@@ -24,6 +25,7 @@ else:
 
 
 # NOTE: I think this script is supposed to only run fama5, insurance and sp500 experiments (not climdex!)
+# TODO: Make this work for climate and run all experiments!
 
 """
 Model specifications
@@ -37,7 +39,12 @@ def base_rqs_spec(dim: int, model_config: dict) -> list[Transform]:
         tail_bound=model_config.get('tail_bound', 3),
         affine_autoreg_layer=True,
         depth=model_config.get('depth', 1),
-        u_linear_layer=True
+        u_linear_layer=True,
+        nn_kwargs=NNKwargs(
+            hidden_features=model_config.get("hidden_features"),
+            num_blocks=model_config.get("num_blocks"),
+            use_batch_norm=model_config.get("use_batch_norm"),
+        ),
     )
 
 def normal(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
@@ -62,21 +69,17 @@ def get_preprocessor(dfs: list[float]): # Used for training a normal model with 
 
     return _preprocess
 
+
 def ttf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
-    """ Builds a NSF model with a final TTF transformation with learnable tail params, initialized by sampling uniformly from [0.05, 1.0].
-        As the tail param are initialized randomly, the dfs argument is non-used. """
+    """ Builds a NSF model with a final TTF transformation with learnable tail params."""
     return flows.build_ttf_m(
         dim,
         use="density_estimation",
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=False,
-            pos_tail_init=[
-                float(t.cpu()) for t in torch.distributions.Uniform(low=0.05, high=1.0).sample([dim])
-            ],
-            neg_tail_init=[
-                float(t.cpu()) for t in torch.distributions.Uniform(low=0.05, high=1.0).sample([dim])
-            ]
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
         ),
         final_rotation="lu",
     )
@@ -98,9 +101,73 @@ def ttf_rqs_fix(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
     )
 
 
-def ttf_rqs_mod(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
-    """ Builds a NSF model with a final modified TTF transformation with tail params given by dfs.
-        NOTE: Edit model_kwargs to specify TTF modifications! """
+def ttf_rqs_hdonly(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final TTF transformation (only in heavy-tailed directions) with learnable tail params, initialized by sampling uniformly from [0.05, 1.0].
+        As the tail param are initialized randomly, the dfs argument is non-used. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=False,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            hd_only=True,
+            mod="std",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def ttf_rqs_lin(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear modified TTF transformation with learnable tail params given by dfs. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=False,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            hd_only=False,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def ttf_rqs_lin_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear modified TTF transformation (only in heavy-tailed directions)
+    with learnable tail params given by dfs. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=False,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            hd_only=True,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def ttf_rqs_qua(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final quadratic-derivative-modified TTF transformation with fixed tail params given by dfs. """
     return flows.build_ttf_mod_m(
         dim,
         use="density_estimation",
@@ -114,11 +181,75 @@ def ttf_rqs_mod(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow
             mod="qua",
             a_pos_init=None,
             a_neg_init=None,
-            fix_params=True,
+            fix_params=False,
         ),
         final_rotation="lu",
     )
 
+
+def ttf_rqs_qua_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final quadratic-derivative-modified TTF transformation (only in heavy-tailed directions)
+    with fixed tail params given by dfs. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=True,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            hd_only=True,
+            mod="qua",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def ttf_rqs_erfi(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final erfi-modified TTF transformation with learnable tail params given by dfs. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=False,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in dfs['dfs']],
+            hd_only=False,
+            mod="erfi",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def ttf_rqs_erfi_hdonly(dim: int, dfs: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final erfi-modified TTF transformation (in heavy-tailed directions only)
+    with learnable tail params given by dfs. """
+    return flows.build_ttf_mod_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            fix_tails=False,
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in dfs['dfs']],
+            hd_only=True,
+            mod="erfi",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
 
 
 def gtaf_rqs(dim: int, dfs, model_config: dict) -> flows.ExperimentFlow:
@@ -167,8 +298,14 @@ def comet(dim, dfs, model_config, x_trn):
 
 model_definitions = {
     "ttf": ttf_rqs,
+    "ttf_hdonly": ttf_rqs_hdonly,
     "ttf_fix": ttf_rqs_fix,
-    "ttf_mod": ttf_rqs_mod,
+    "ttf_lin": ttf_rqs_lin,
+    "ttf_lin_hdonly": ttf_rqs_lin_hdonly,
+    "ttf_qua": ttf_rqs_qua,
+    "ttf_qua_hdonly": ttf_rqs_qua_hdonly,
+    "ttf_erfi": ttf_rqs_erfi,
+    "ttf_erfi_hdonly": ttf_rqs_erfi_hdonly,
     "gtaf": gtaf_rqs,
     "mtaf": mtaf_rqs,
     "normal":  normal,
@@ -273,8 +410,8 @@ def run_experiment(
             "dim": dim, 
             "seed": seed,
             "split": split,
-            "tst_ll": float(tst_loss),
-            "val_ll": float(val_loss),
+            "tst_nll": float(tst_loss),
+            "val_nll": float(val_loss),
             "tst_ix": tst_ix,
             "loss_path": loss_path,
             "loss_ix": loss_ix,
@@ -289,58 +426,81 @@ optimisation_overrides = {
     'sp500': {
         "lr": 5e-4, 
         "num_steps": 2_000, 
-        "batch_size": 100, 
+        "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
         "lr_scheduler": None,
     },
     'fama5': {
         "lr": 5e-4, 
-        "num_steps": 5_000, 
-        "batch_size": 100, 
+        "num_steps": 8_000, 
+        "batch_size": 512, 
+        "early_stop_patience": 500,
+        "eval_period": 25,
+        "lr_scheduler": None,
+    },
+    'insurance':{
+        "lr": 5e-4, 
+        "num_steps": 2_000, 
+        "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
         "lr_scheduler": None,
     }
+
 }
 
 def configured_experiments():
     """ Run several experiments in parallel by modifying the following dictionaries. """
 
     model_labels = [
-        # "normal", 
+        "normal", 
+        "ttf",
+        "ttf_hdonly",
         "ttf_fix", 
-        "ttf_mod",
-        # "ttf", 
-        # "comet", 
-        # "mtaf", 
-        # "gtaf"
+        "ttf_lin",
+        "ttf_lin_hdonly",
+        "ttf_qua",
+        "ttf_qua_hdonly",
+        "ttf_erfi",
+        "ttf_erfi_hdonly",
+        "mtaf", 
+        "gtaf"
     ]
 
-    experiment_name = "2026-08-26-de-sp500-try01"
-    # data_sources = ['fama5', 'sp500', 'insurance']
-    data_sources = ['sp500']
+    experiment_name = "2026-08-31-de-all"
+    data_sources = ['fama5', 'sp500', 'insurance']
 
-    opt_params = {
-        "lr": 5e-4, 
-        "num_steps": 3_000, 
+    opt_params = { # for climate TODO!
+        "lr": 1e-4, 
+        "num_steps": 20_000, 
         "batch_size": 512,
-        "early_stop_patience": 1_00,
-        "eval_period": 20, # period for computing validation loss
+        "early_stop_patience": 5_00,
+        "eval_period": 25, # period for computing validation loss
         "lr_scheduler": "cosine_anneal_wr",
     }
 
-    model_config = {
-        "depth": 1,
-        "num_bins": 5,
-        "tail_bound": 2.5
-    }
+    # model_config
+    depths = [1, 2]
+    numbers_of_bins = [5]
+    tail_bounds = [2.5] # for RQS layers, not final tail trafos!
 
     experiments = []
     for data_source in data_sources:
         for split in range(10):
             repeat_seed = 17*split
-            for depth in [1]:
+
+            if data_source == "climate": # climate data uses different model config
+
+                model_config = {
+                    "depth": 5,
+                    "num_bins": 3,
+                    "tail_bound": 2.5,
+                    "num_blocks": 2,
+                    "hidden_features": 100,
+                    "use_batch_norm": True,
+                }
+
                 for model_label in model_labels:
                     
                     opt_params = optimisation_overrides.get(data_source, opt_params)
@@ -355,11 +515,34 @@ def configured_experiments():
                         model_config=model_config,
                     ))
 
+            else:
+                for depth in depths:
+                    for num_bins in numbers_of_bins:
+                        for tail_bound in tail_bounds:
+
+                            model_config = {
+                                "depth": depth,
+                                "num_bins": num_bins,
+                                "tail_bound": tail_bound,
+                            }
+
+                            for model_label in model_labels:
+                                
+                                opt_params = optimisation_overrides.get(data_source, opt_params)
+
+                                experiments.append(dict(
+                                    data_source=data_source,
+                                    experiment_name=experiment_name,
+                                    split=split,
+                                    seed=repeat_seed,
+                                    model_label=model_label,
+                                    opt_params=opt_params,
+                                    model_config=model_config,
+                                ))
+
     parallel_runner(run_experiment, experiments, max_runs=5)
-    # print(experiments)
-    # run_experiment(**experiments[0])
 
 if __name__ == "__main__":
-    import multiprocessing as mp
+    import torch.multiprocessing as mp
     mp.set_start_method("spawn", force=True)
     configured_experiments()
