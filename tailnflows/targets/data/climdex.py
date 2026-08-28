@@ -14,7 +14,7 @@ def load_climdex_data():
     """
     This is replicated from the marginalTailAdaptiveFlow paper
     https://github.com/MikeLasz/marginalTailAdaptiveFlow/blob/master/utils/flows.py#L532
-    IMPORTANT: Currently always uses the same seed for random train/val/test splits!
+    Returns train, val and test data. Before the split, data is normalized, and sorted like described in the mTAF paper.
     """
     columns = slice(0, None)
     ds_inputs = xr.open_dataset(f"{get_project_root()}/data/nwp_saf_profiles_in.nc")
@@ -26,10 +26,10 @@ def load_climdex_data():
     ds_true, stats_info = to_normalized_dataset(ds_true_in)
 
     ds_train, ds_test = train_test_split_dataset(
-        ds_true, test_size=0.6, dim="column", shuffle=True, seed=42 # pyright: ignore[reportArgumentType]
+        ds_true, test_size=0.6, dim="column", shuffle=True # pyright: ignore[reportArgumentType]
     )
     ds_test, ds_validation = train_test_split_dataset(
-        ds_test, test_size=0.33334, dim="column", shuffle=True, seed=42
+        ds_test, test_size=0.33334, dim="column", shuffle=True
     )
     ds_train, _ = train_test_split_dataset(
         ds_train, train_size=1, dim="column", shuffle=False
@@ -81,8 +81,7 @@ def load_climdex_data():
 
     # always apply this reordering used in paper
     permutation = list(range(80)) # light-tailed temperature
-    # light-tailed pressure
-    pressure_light = list(range(137, 237))
+    pressure_light = list(range(137, 137+100)) # light-tailed pressure
     pressure_light.reverse()
     permutation += pressure_light
     permutation += list(range(137+100+38, 137 + 100 + 38 + 58)) # light-tailed depth
