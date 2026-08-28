@@ -95,17 +95,16 @@ def generate_data_split(split, seed, out_path, x):
 if __name__ == "__main__":
     from functools import partial
 
-    # print('Generating splits + tail estimation for SP500...')
-    # from tailnflows.targets.data.sp500_returns import load_return_data
-    # # will generate for up to dim top_n_symbols
-    # # currently only works for up to dim 145, as the other stocks are incomplete!
-    # top_n_symbols = 140
-    # x, _ = load_return_data(top_n_symbols)
-    # _generator_sp500 = partial(generate_data_split, out_path="splits/sp500", x=x)
+    print('Generating splits + tail estimation for SP500...')
+    from tailnflows.targets.data.sp500_returns import load_return_data
+    # will generate for up to dim top_n_symbols
+    top_n_symbols = 300
+    x, _ = load_return_data(top_n_symbols)
+    _generator_sp500 = partial(generate_data_split, out_path="splits/sp500", x=x)
 
-    # for split in range(10):
-    #     print(f"Preprocessing for SP500 split {split}...")
-    #     _generator_sp500(split, seed = 1100 + 100*split)
+    for split in range(10):
+        print(f"Preprocessing for SP500 split {split}...")
+        _generator_sp500(split, seed = 1100 + 29*split)
 
     # print('Generating splits + tail estimation for fama5...')
     # from tailnflows.targets.data.fama5 import load_data
@@ -116,13 +115,13 @@ if __name__ == "__main__":
     #     print(f"Preprocessing for fama5 split {split}...")
     #     _generator_fama5(split, seed = 110 + 10*split)
 
-    print('Generating splits + tail estimation for insurance data...')
-    from tailnflows.targets.data.insurance import load_data
-    x = load_data()
-    _generator_insurance = partial(generate_data_split, out_path="splits/insurance", x=x)
+    # print('Generating splits + tail estimation for insurance data...')
+    # from tailnflows.targets.data.insurance import load_data
+    # x = load_data()
+    # _generator_insurance = partial(generate_data_split, out_path="splits/insurance", x=x)
 
-    for split in range(10):
-        print(f"Preprocessing for insurance data split {split}...")
-        _generator_insurance(split, seed = 11 + 1*split)
+    # for split in range(10):
+    #     print(f"Preprocessing for insurance data split {split}...")
+    #     _generator_insurance(split, seed = 11 + 1*split)
 
     print("Process finished successfully.")
