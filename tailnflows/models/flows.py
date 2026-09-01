@@ -641,6 +641,7 @@ def build_mtaf(
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
     nn_kwargs: NNKwargs = {},
+    device: torch.device = "cpu",
 ):
     assert (
         "tail_init" in model_kwargs
@@ -659,6 +660,7 @@ def build_mtaf(
     tail_init = model_kwargs.get("tail_init", None)  # in df terms
     if not isinstance(tail_init, torch.Tensor):
         tail_init = torch.Tensor(tail_init)
+    tail_init = tail_init.to(device)
     fix_tails = model_kwargs["fix_tails"]
 
     # organise into heavy/light components

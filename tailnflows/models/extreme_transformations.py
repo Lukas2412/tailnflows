@@ -67,14 +67,21 @@ class SpecifiedNNKwargs(TypedDict, total=True):
 
 
 def configure_nn(nn_kwargs: NNKwargs) -> SpecifiedNNKwargs:
+    hidden_features = nn_kwargs.get("hidden_features", 5) if nn_kwargs.get("hidden_features", 5) is not None else 5
+    num_blocks = nn_kwargs.get("num_blocks", 2) if nn_kwargs.get("num_blocks", 2) is not None else 2
+    use_residual_blocks = nn_kwargs.get("use_residual_blocks", True) if nn_kwargs.get("use_residual_blocks", True) is not None else True
+    random_mask = nn_kwargs.get("random_mask", False) if nn_kwargs.get("random_mask", False) is not None else False
+    activation = nn_kwargs.get("activation", relu) if nn_kwargs.get("activation", relu) is not None else relu
+    dropout_probability = nn_kwargs.get("dropout_probability", 0.0) if nn_kwargs.get("dropout_probability", 0.0) is not None else 0.0
+    use_batch_norm = nn_kwargs.get("use_batch_norm", False) if nn_kwargs.get("use_batch_norm", False) is not None else False
     return {
-        "hidden_features": nn_kwargs.get("hidden_features", 5),
-        "num_blocks": nn_kwargs.get("num_blocks", 2),
-        "use_residual_blocks": nn_kwargs.get("use_residual_blocks", True),
-        "random_mask": nn_kwargs.get("random_mask", False),
-        "activation": nn_kwargs.get("activation", relu),
-        "dropout_probability": nn_kwargs.get("dropout_probability", 0.0),
-        "use_batch_norm": nn_kwargs.get("use_batch_norm", False),
+        "hidden_features": hidden_features,
+        "num_blocks": num_blocks,
+        "use_residual_blocks": use_residual_blocks,
+        "random_mask": random_mask,
+        "activation": activation,
+        "dropout_probability": dropout_probability,
+        "use_batch_norm": use_batch_norm,
     }
 
 

@@ -262,7 +262,7 @@ def gtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFl
     )
 
 
-def mtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+def mtaf_rqs(dim: int, metadata: dict, model_config: dict, device: torch.device = DEFAULT_DEVICE) -> flows.ExperimentFlow:
     """ Builds a NSF with a fixed base distribution consisting of normal distributions (for light-tailed marginals)
         and Student-t distributions with degrees of freedom given by dfs. """
     return flows.build_mtaf(
@@ -271,6 +271,7 @@ def mtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFl
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(fix_tails=True, tail_init=metadata['dfs']),
         final_rotation="lu",
+        device=device,
     )
 
 
@@ -373,6 +374,12 @@ def run_experiment(
     ##########################
     # create model and train #
     ##########################
+
+    # climate: Force heavy tails (with max df = 10.0) for the last 177 marginals (see mTAF paper)
+    if data_source == "climate":
+        metadata["dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["dfs"]]
+        metadata["pos_dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["pos_dfs"]]
+        metadata["neg_dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["neg_dfs"]]
 
     # Load preprocess if specified
     if model_label.endswith('preprocess'):
@@ -479,22 +486,23 @@ def configured_experiments():
     """ Run several experiments in parallel by modifying the following dictionaries. """
 
     model_labels = [
-        "normal", 
-        "ttf",
-        "ttf_hdonly",
-        "ttf_fix", 
-        "ttf_lin",
-        "ttf_lin_hdonly",
-        "ttf_qua",
-        "ttf_qua_hdonly",
-        "ttf_erfi",
-        "ttf_erfi_hdonly",
+        # "normal", 
+        # "ttf",
+        # "ttf_hdonly",
+        # "ttf_fix", 
+        # "ttf_lin",
+        # "ttf_lin_hdonly",
+        # "ttf_qua",
+        # "ttf_qua_hdonly",
+        # "ttf_erfi",
+        # "ttf_erfi_hdonly",
         "mtaf", 
         "gtaf"
     ]
 
-    experiment_name = "2026-08-31-de-all"
-    data_sources = ['climate', 'fama5', 'sp500', 'insurance']
+    experiment_name = "2026-08-31-de-mtaf-test"
+    # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
+    data_sources = ['insurance']
 
     opt_params = { # currently will be overriden by optimization_overrides
         "lr": 1e-4, 
@@ -506,7 +514,8 @@ def configured_experiments():
     }
 
     # model_config
-    depths = [1, 2]
+    # depths = [1, 2]
+    depths = [1]
     numbers_of_bins = [5]
     tail_bounds = [2.5] # for RQS layers, not final tail trafos!
 
