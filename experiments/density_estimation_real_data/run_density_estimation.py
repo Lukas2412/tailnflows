@@ -248,6 +248,166 @@ def ttf_rqs_erfi_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.E
     )
 
 
+def softlog_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final softlog transformation. """
+    return flows.build_softlog_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            hd_only=False,
+            mod="std",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def softlog_rqs_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final softlog transformation (only in heavy-tailed directions). """
+    return flows.build_softlog_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            hd_only=True,
+            mod="std",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def softlog_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear-modified softlog transformation. """
+    return flows.build_softlog_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            hd_only=False,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def softlog_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear-modified softlog transformation (only in heavy-tailed directions). """
+    return flows.build_softlog_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            hd_only=True,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def arcsinh_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final arcsinh transformation. """
+    return flows.build_arcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            hd_only=False,
+            mod="std",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def arcsinh_rqs_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final arcsinh transformation (only in heavy-tailed directions). """
+    return flows.build_arcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            hd_only=True,
+            mod="std",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def arcsinh_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear-modified arcsinh transformation. """
+    return flows.build_arcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            hd_only=False,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def arcsinh_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final linear-modified arcsinh transformation (only in heavy-tailed directions). """
+    return flows.build_arcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            hd_only=True,
+            mod="lin",
+            a_pos_init=None,
+            a_neg_init=None,
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
 def gtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
     """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0] """
     return flows.build_gtaf(
@@ -303,6 +463,14 @@ model_definitions = {
     "ttf_qua_hdonly": ttf_rqs_qua_hdonly,
     "ttf_erfi": ttf_rqs_erfi,
     "ttf_erfi_hdonly": ttf_rqs_erfi_hdonly,
+    "softlog": softlog_rqs,
+    "softlog_hdonly": softlog_rqs_hdonly,
+    "softlog_lin": softlog_rqs_lin,
+    "softlog_lin_hdonly": softlog_rqs_lin_hdonly,
+    "arcsinh": arcsinh_rqs,
+    "arcsinh_hdonly": arcsinh_rqs_hdonly,
+    "arcsinh_lin": arcsinh_rqs_lin,
+    "arcsinh_lin_hdonly": arcsinh_rqs_lin_hdonly,
     "gtaf": gtaf_rqs,
     "mtaf": mtaf_rqs,
     "normal":  normal,
@@ -483,7 +651,7 @@ optimisation_overrides = {
 }
 
 def configured_experiments():
-    """ Run several experiments in parallel by modifying the following dictionaries. """
+    """ Run several experiments in parallel by modifying the following code. """
 
     model_labels = [
         # "normal", 
@@ -496,11 +664,19 @@ def configured_experiments():
         # "ttf_qua_hdonly",
         # "ttf_erfi",
         # "ttf_erfi_hdonly",
+        # "softlog",
+        # "softlog_hdonly",
+        # "softlog_lin",
+        # "softlog_lin_hdonly",
+        # "arcsinh",
+        # "arcsinh_hdonly",
+        # "arcsinh_lin",
+        # "arcsinh_lin_hdonly",
         "mtaf", 
         "gtaf"
     ]
 
-    experiment_name = "2026-08-31-de-mtaf-test"
+    experiment_name = "2026-09-03-de-test"
     # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
     data_sources = ['insurance']
 

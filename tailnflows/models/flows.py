@@ -31,6 +31,8 @@ from tailnflows.models.extreme_transformations import (
     NNKwargs,
     TailAffineMarginalTransform,
     ModifiedTailAffineMarginalTransform,
+    SoftLogMarginalTransform,
+    ArcsinhMarginalTransform,
     InterpMarginalTransform,
     MaskedAutoregressiveTailAffineMarginalTransform,
     TailScaleShiftMarginalTransform,
@@ -589,6 +591,100 @@ def build_ttf_mod_m(
 
     if fix_tails:
         tail_transform.fix_tails()
+
+    # the tail transformation needs to be flipped this means data->noise is
+    # a strictly lightening transformation
+    tail_transform = flip(tail_transform)
+
+    return ExperimentFlow(
+        use=use,
+        base_distribution=base_distribution,
+        base_transformation_init=base_transformation_init,
+        final_transformation=tail_transform,
+        final_rotation=final_rotation,
+        constraint_transformation=constraint_transformation,
+    )
+
+
+def build_softlog_m(
+    dim: int,
+    use: ModelUse = "density_estimation",
+    base_transformation_init: Optional[BaseTransform] = None,
+    constraint_transformation: Optional[Transform] = None,
+    final_rotation: FinalRotation = None,
+    model_kwargs: ModelKwargs = {},
+) -> ExperimentFlow:
+    """ Builds a SoftLog model. """
+    # configure model specific settings
+    pos_tail_init = model_kwargs.get("pos_tail_init", None)
+    neg_tail_init = model_kwargs.get("neg_tail_init", None)
+    hd_only = model_kwargs.get("hd_only", True)
+    mod = model_kwargs.get("mod", "std")
+    a_pos_init = model_kwargs.get("a_pos_init", None)
+    a_neg_init = model_kwargs.get("a_neg_init", None)
+    fix_params = model_kwargs.get("fix_params", False)
+    
+    # base distribution
+    base_distribution = StandardNormal([dim])
+
+    # set up tail transform
+    tail_transform = SoftLogMarginalTransform(
+        features=dim,
+        pos_tail_init = pos_tail_init if isinstance(pos_tail_init, torch.Tensor) else torch.tensor(pos_tail_init),
+        neg_tail_init = neg_tail_init if isinstance(neg_tail_init, torch.Tensor) else torch.tensor(neg_tail_init),
+        hd_only = hd_only,
+        mod = mod,
+        a_pos_init = a_pos_init,
+        a_neg_init = a_neg_init,
+        fix_params = fix_params,
+    )
+
+    # the tail transformation needs to be flipped this means data->noise is
+    # a strictly lightening transformation
+    tail_transform = flip(tail_transform)
+
+    return ExperimentFlow(
+        use=use,
+        base_distribution=base_distribution,
+        base_transformation_init=base_transformation_init,
+        final_transformation=tail_transform,
+        final_rotation=final_rotation,
+        constraint_transformation=constraint_transformation,
+    )
+
+
+def build_arcsinh_m(
+    dim: int,
+    use: ModelUse = "density_estimation",
+    base_transformation_init: Optional[BaseTransform] = None,
+    constraint_transformation: Optional[Transform] = None,
+    final_rotation: FinalRotation = None,
+    model_kwargs: ModelKwargs = {},
+) -> ExperimentFlow:
+    """ Builds an Arcsinh model. """
+    # configure model specific settings
+    pos_tail_init = model_kwargs.get("pos_tail_init", None)
+    neg_tail_init = model_kwargs.get("neg_tail_init", None)
+    hd_only = model_kwargs.get("hd_only", False)
+    mod = model_kwargs.get("mod", "std")
+    a_pos_init = model_kwargs.get("a_pos_init", None)
+    a_neg_init = model_kwargs.get("a_neg_init", None)
+    fix_params = model_kwargs.get("fix_params", False)
+    
+    # base distribution
+    base_distribution = StandardNormal([dim])
+
+    # set up tail transform
+    tail_transform = ArcsinhMarginalTransform(
+        features=dim,
+        pos_tail_init = pos_tail_init if isinstance(pos_tail_init, torch.Tensor) else torch.tensor(pos_tail_init),
+        neg_tail_init = neg_tail_init if isinstance(neg_tail_init, torch.Tensor) else torch.tensor(neg_tail_init),
+        hd_only = hd_only,
+        mod = mod,
+        a_pos_init = a_pos_init,
+        a_neg_init = a_neg_init,
+        fix_params = fix_params,
+    )
 
     # the tail transformation needs to be flipped this means data->noise is
     # a strictly lightening transformation
