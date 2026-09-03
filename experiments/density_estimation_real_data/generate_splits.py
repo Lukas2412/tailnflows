@@ -112,7 +112,7 @@ def generate_data_split(split, seed, out_path, x, climate: bool = False):
         },
     }
     if climate:
-        dataset["split"] = {"x_trn:": x_trn, "x_val": x_val, "x_tst": x_tst} # store datasets instead of indices for climate data
+        dataset["split"] = {"x_trn": x_trn, "x_val": x_val, "x_tst": x_tst} # store datasets instead of indices for climate data
     else: # the following metadata is not available for climate data
         dataset["split"] = {"trn": trn_ix, "val": val_ix, "tst": tst_ix} # indices, not datasets
         dataset["metadata"]["mean"] = list(trn_val_mean.cpu().numpy())
