@@ -3324,7 +3324,7 @@ class SoftLogMarginalTransform(Transform):
             # All directions will be transformed
             if self.mod == "std":
                 z, lad = softlog_both_inverse(x)
-            elif self.mod == "line":
+            elif self.mod == "lin":
                 z, lad = softlog_lin_both_inverse(x, self.a_pos, self.a_neg)
 
         else:
@@ -3546,7 +3546,7 @@ class ArcsinhMarginalTransform(Transform):
             # All directions will be transformed
             if self.mod == "std":
                 z, lad = arcsinh_both_inverse(x)
-            elif self.mod == "line":
+            elif self.mod == "lin":
                 z, lad = arcsinh_lin_both_inverse(x, self.a_pos, self.a_neg)
 
         else:

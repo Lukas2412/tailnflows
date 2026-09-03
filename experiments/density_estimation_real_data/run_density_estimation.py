@@ -74,24 +74,23 @@ def ttf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlo
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=False,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['neg_dfs']],
         ),
         final_rotation="lu",
     )
 
 
 def ttf_rqs_fix(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
-    """ Builds a NSF model with a final TTF transformation with non-learnable tail params,
-        initialized symmetrically for pos and neg tails given by the values in dfs. """
+    """ Builds a NSF model with a final TTF transformation with non-learnable tail params. """
     return flows.build_ttf_m(
         dim,
         use="density_estimation",
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=True,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['neg_dfs']],
         ),
         final_rotation="lu",
     )
@@ -128,8 +127,8 @@ def ttf_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.Experimen
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="lin",
             a_pos_init=None,
@@ -171,8 +170,8 @@ def ttf_rqs_qua(dim: int, metadata: dict, model_config: dict) -> flows.Experimen
         model_kwargs=dict(
             fix_tails=True,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="qua",
             a_pos_init=None,
@@ -214,8 +213,8 @@ def ttf_rqs_erfi(dim: int, metadata: dict, model_config: dict) -> flows.Experime
         model_kwargs=dict(
             fix_tails=False,
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 1e-4 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="erfi",
             a_pos_init=None,
@@ -256,8 +255,8 @@ def softlog_rqs(dim: int, metadata: dict, model_config: dict) -> flows.Experimen
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="std",
             a_pos_init=None,
@@ -276,8 +275,8 @@ def softlog_rqs_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.Ex
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="std",
             a_pos_init=None,
@@ -296,8 +295,8 @@ def softlog_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.Exper
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="lin",
             a_pos_init=None,
@@ -316,8 +315,8 @@ def softlog_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flow
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="lin",
             a_pos_init=None,
@@ -336,8 +335,8 @@ def arcsinh_rqs(dim: int, metadata: dict, model_config: dict) -> flows.Experimen
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="std",
             a_pos_init=None,
@@ -356,8 +355,8 @@ def arcsinh_rqs_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.Ex
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="std",
             a_pos_init=None,
@@ -376,8 +375,8 @@ def arcsinh_rqs_lin(dim: int, metadata: dict, model_config: dict) -> flows.Exper
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
             hd_only=False,
             mod="lin",
             a_pos_init=None,
@@ -396,8 +395,8 @@ def arcsinh_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flow
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             device=DEFAULT_DEVICE,
-            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
-            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['dfs']],
+            pos_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.0 for df in metadata['neg_dfs']],
             hd_only=True,
             mod="lin",
             a_pos_init=None,
@@ -408,17 +407,19 @@ def arcsinh_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flow
     )
 
 
-def gtaf_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
-    """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0] """
+def gtaf_rqs(dim: int, metadata: dict, model_config: dict, device: torch.device = DEFAULT_DEVICE) -> flows.ExperimentFlow:
+    """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0]. """
     return flows.build_gtaf(
         dim,
         use="density_estimation",
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
         model_kwargs=dict(
             fix_tails=False,
-            tail_init=torch.distributions.Uniform(low=1.0, high=20.0).sample([dim]),
+            # tail_init=torch.distributions.Uniform(low=1.0, high=20.0).sample([dim]),
+            tail_init=[df if (df != 0.0 and df <= 10.0) else 10.0 for df in metadata['dfs']] # in df terms
         ),
         final_rotation="lu",
+        device=device,
     )
 
 
@@ -429,7 +430,11 @@ def mtaf_rqs(dim: int, metadata: dict, model_config: dict, device: torch.device 
         dim,
         use="density_estimation",
         base_transformation_init=partial(base_rqs_spec, model_config=model_config),
-        model_kwargs=dict(fix_tails=True, tail_init=metadata['dfs']),
+        model_kwargs=dict(
+            fix_tails=True,
+            # tail_init=metadata['dfs']
+            tail_init=[df if df <= 10.0 else 0.0 for df in metadata['dfs']] # in df terms
+        ),
         final_rotation="lu",
         device=device,
     )
@@ -515,8 +520,11 @@ def run_experiment(
     if data_source == "climate":
         # Load train/val/test split directly as normalized tensors
         x_trn = splits_and_tail["split"]["x_trn"]
+        x_trn = x_trn.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
         x_val = splits_and_tail["split"]["x_val"]
+        x_val = x_val.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
         x_tst = splits_and_tail["split"]["x_tst"]
+        x_tst = x_tst.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
         n = x_trn.shape[0] + x_val.shape[0] + x_tst.shape[0]
         print(f"Num data samps: {n}")
         dim = x_trn.shape[1]
@@ -545,9 +553,9 @@ def run_experiment(
 
     # climate: Force heavy tails (with max df = 10.0) for the last 177 marginals (see mTAF paper)
     if data_source == "climate":
-        metadata["dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["dfs"]]
-        metadata["pos_dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["pos_dfs"]]
-        metadata["neg_dfs"] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["neg_dfs"]]
+        metadata["dfs"][-177:] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["dfs"][-177:]]
+        metadata["pos_dfs"][-177:] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["pos_dfs"][-177:]]
+        metadata["neg_dfs"][-177:] = [(lambda nu: 10.0 if (nu > 10.0 or nu == 0.0) else nu)(df) for df in metadata["neg_dfs"][-177:]]
 
     # Load preprocess if specified
     if model_label.endswith('preprocess'):
@@ -654,45 +662,45 @@ def configured_experiments():
     """ Run several experiments in parallel by modifying the following code. """
 
     model_labels = [
-        # "normal", 
-        # "ttf",
-        # "ttf_hdonly",
-        # "ttf_fix", 
-        # "ttf_lin",
-        # "ttf_lin_hdonly",
-        # "ttf_qua",
-        # "ttf_qua_hdonly",
-        # "ttf_erfi",
-        # "ttf_erfi_hdonly",
-        # "softlog",
-        # "softlog_hdonly",
-        # "softlog_lin",
-        # "softlog_lin_hdonly",
-        # "arcsinh",
-        # "arcsinh_hdonly",
-        # "arcsinh_lin",
-        # "arcsinh_lin_hdonly",
+        "normal", 
+        "ttf",
+        "ttf_hdonly",
+        "ttf_fix", 
+        "ttf_lin",
+        "ttf_lin_hdonly",
+        "ttf_qua",
+        "ttf_qua_hdonly",
+        "ttf_erfi",
+        "ttf_erfi_hdonly",
+        "softlog",
+        "softlog_hdonly",
+        "softlog_lin",
+        "softlog_lin_hdonly",
+        "arcsinh",
+        "arcsinh_hdonly",
+        "arcsinh_lin",
+        "arcsinh_lin_hdonly",
         "mtaf", 
         "gtaf"
     ]
 
     experiment_name = "2026-09-03-de-test"
-    # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
-    data_sources = ['insurance']
+    data_sources = ['climate', 'fama5', 'sp500', 'insurance']
 
-    opt_params = { # currently will be overriden by optimization_overrides
+    opt_params = { # NOTE: ONLY FOR EXPERIMENT TESTING!
         "lr": 1e-4, 
-        "num_steps": 20_000, 
-        "batch_size": 512,
-        "early_stop_patience": 5_00,
-        "eval_period": 25, # period for computing validation loss
-        "lr_scheduler": "cosine_anneal_wr",
+        "num_steps": 20, 
+        "batch_size": 32,
+        "early_stop_patience": None,
+        "eval_period": 500, # period for computing validation loss
+        "lr_scheduler": None,
     }
 
     # model_config
     # depths = [1, 2]
     depths = [1]
-    numbers_of_bins = [5]
+    # numbers_of_bins = [5]
+    numbers_of_bins = [2] # NOTE: ONLY FOR EXPERIMENT TESTING!
     tail_bounds = [2.5] # for RQS layers, not final tail trafos!
 
     experiments = []
@@ -702,18 +710,27 @@ def configured_experiments():
 
             if data_source == "climate": # climate data uses different model config
 
-                model_config = {
-                    "depth": 5,
-                    "num_bins": 3,
+                # model_config = {
+                #     "depth": 5,
+                #     "num_bins": 3,
+                #     "tail_bound": 2.5,
+                #     "num_blocks": 2,
+                #     "hidden_features": 100,
+                #     "use_batch_norm": True,
+                # }
+                model_config = { # NOTE: ONLY FOR EXPERIMENT TESTING!
+                    "depth": 1,
+                    "num_bins": 2,
                     "tail_bound": 2.5,
-                    "num_blocks": 2,
-                    "hidden_features": 100,
-                    "use_batch_norm": True,
+                    "num_blocks": 1,
+                    "hidden_features": 8,
+                    "use_batch_norm": False,
                 }
 
                 for model_label in model_labels:
                     
-                    opt_params = optimisation_overrides.get(data_source, opt_params)
+                    # opt_params = optimisation_overrides.get(data_source, opt_params)
+                    # NOTE: ONLY FOR EXPERIMENT TESTING!
 
                     experiments.append(dict(
                         data_source=data_source,
@@ -738,7 +755,8 @@ def configured_experiments():
 
                             for model_label in model_labels:
                                 
-                                opt_params = optimisation_overrides.get(data_source, opt_params)
+                                # opt_params = optimisation_overrides.get(data_source, opt_params)
+                                # NOTE: ONLY FOR EXPERIMENT TESTING!
 
                                 experiments.append(dict(
                                     data_source=data_source,

@@ -163,6 +163,7 @@ cython_debug/
 # don't include experiment outputs (too much data)
 experiment_output/*
 data/*
+trash/*
 rough_work/*
 *.code-workspace
 

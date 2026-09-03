@@ -707,11 +707,13 @@ def build_gtaf(
     constraint_transformation: Optional[Transform] = None,
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
+    device: torch.device = "cpu",
 ):
     # model specific settings
     tail_init = model_kwargs.get("tail_init", None)  # in df terms
     if not isinstance(tail_init, torch.Tensor):
         tail_init = torch.Tensor(tail_init)
+    tail_init = tail_init.to(device)
 
     # base distribution
     base_distribution = TrainableStudentT(dim, init=tail_init)
@@ -791,7 +793,7 @@ def build_mtaf(
 
     # adjust the final rotation transformation
     if final_rotation is not None and (tail_init > 0).sum() < dim:
-        mtaf.set_final_rotation(TailLU(dim, int(num_heavy)))
+        mtaf.set_final_rotation(TailLU(dim, int(num_heavy), device=device))
 
     # check for any rotations in the base transformation, these invalidate the
     # mtaf assumptions, we need to preserve groups of heavy/light
