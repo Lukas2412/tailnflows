@@ -3,6 +3,18 @@ from functools import partial
 
 import torch
 
+DEFAULT_DTYPE = torch.float32
+torch.set_default_dtype(DEFAULT_DTYPE)
+
+gpu_ix = 2
+if torch.cuda.is_available():
+    DEFAULT_DEVICE = torch.device(f"cuda:{gpu_ix}")
+    torch.set_default_device(DEFAULT_DEVICE) # tensors without specified device will be initialized on cuda{gpu_ix}
+    torch.cuda.set_device(DEFAULT_DEVICE) # tensors with device="cuda" will be put on cuda{gpu_ix}
+else:
+    DEFAULT_DEVICE = torch.device("cpu")
+    torch.set_default_device("cpu")
+
 from nflows.transforms.base import Transform
 
 from tailnflows.targets.data import real_data_sources
@@ -11,17 +23,7 @@ from tailnflows.train import data_fit
 from tailnflows.utils import add_raw_data, get_experiment_output_path, load_raw_data, get_data_path, add_experiment_output_data, parallel_runner
 from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse_and_lad
 from tailnflows.models.extreme_transformations import NNKwargs, SpecifiedNNKwargs, configure_nn
-
-DEFAULT_DTYPE = torch.float32
-torch.set_default_dtype(DEFAULT_DTYPE)
-
-gpu_ix = 3
-if torch.cuda.is_available():
-    torch.set_default_device(f"cuda:{gpu_ix}")
-    DEFAULT_DEVICE = torch.device(f"cuda:{gpu_ix}")
-else:
-    torch.set_default_device("cpu")
-    DEFAULT_DEVICE = torch.device("cpu")
+from tailnflows.metrics import metrics
 
 """
 Model specifications
@@ -587,6 +589,22 @@ def run_experiment(
     )
     tst_loss, val_loss, tst_ix, losses, vlosses, steps, hook_data = fit_data
 
+    # Compute metrics
+    dfs_tensor = torch.tensor(metadata["dfs"]).to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
+    heavy_mask = dfs_tensor > torch.zeros_like(dfs_tensor)
+    if data_source == "climate": # Climate: Classify last 177 marginals as HT
+        heavy_mask[-177:] = True
+
+    num_samps = x_tst.shape[0]
+    target_samps = x_tst.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE)
+    synth_samps = model.sample(num_samps)
+
+    sw2 = metrics.sliced_wp(synth_samps, target_samps, p=2.0)
+    w1_ht = metrics.wp_1d_mean_over_dims(synth_samps, target_samps, dims=heavy_mask, p=1.0)
+    w1_lt = metrics.wp_1d_mean_over_dims(synth_samps, target_samps, dims=~heavy_mask, p=1.0)
+    var_rel_err_ht = metrics.extreme_quantile_rel_error_multiq_over_dims(synth_samps, target_samps, heavy_mask)
+    var_rel_err_lt = metrics.extreme_quantile_rel_error_multiq_over_dims(synth_samps, target_samps, ~heavy_mask)
+
     ################
     # Save results #
     ################
@@ -613,6 +631,15 @@ def run_experiment(
             "split": split,
             "tst_nll": float(tst_loss),
             "val_nll": float(val_loss),
+            "sw2": sw2, # Sliced Wasserstein-2
+            "w1_ht": w1_ht, # Avg wasserstein-1 on HT dims
+            "w1_lt": w1_lt, # Avg wasserstein-1 on LT dims
+            "var99_ht": var_rel_err_ht[0], # Avg rel VaR_99 difference on HT dims
+            "var995_ht": var_rel_err_ht[1],
+            "var999_ht": var_rel_err_ht[2],
+            "var99_lt": var_rel_err_lt[0], # Avg rel VaR_99 difference on HT dims
+            "var995_lt": var_rel_err_lt[1],
+            "var999_lt": var_rel_err_lt[2],
             "tst_ix": tst_ix,
             "loss_path": loss_path,
             "loss_ix": loss_ix,
@@ -662,34 +689,35 @@ def configured_experiments():
     """ Run several experiments in parallel by modifying the following code. """
 
     model_labels = [
-        "normal", 
-        "ttf",
-        "ttf_hdonly",
-        "ttf_fix", 
-        "ttf_lin",
-        "ttf_lin_hdonly",
-        "ttf_qua",
-        "ttf_qua_hdonly",
-        "ttf_erfi",
-        "ttf_erfi_hdonly",
-        "softlog",
-        "softlog_hdonly",
-        "softlog_lin",
-        "softlog_lin_hdonly",
-        "arcsinh",
-        "arcsinh_hdonly",
-        "arcsinh_lin",
-        "arcsinh_lin_hdonly",
+        # "normal", 
+        # "ttf",
+        # "ttf_hdonly",
+        # "ttf_fix", 
+        # "ttf_lin",
+        # "ttf_lin_hdonly",
+        # "ttf_qua",
+        # "ttf_qua_hdonly",
+        # "ttf_erfi",
+        # "ttf_erfi_hdonly",
+        # "softlog",
+        # "softlog_hdonly",
+        # "softlog_lin",
+        # "softlog_lin_hdonly",
+        # "arcsinh",
+        # "arcsinh_hdonly",
+        # "arcsinh_lin",
+        # "arcsinh_lin_hdonly",
         "mtaf", 
         "gtaf"
     ]
 
-    experiment_name = "2026-09-03-de-test"
-    data_sources = ['climate', 'fama5', 'sp500', 'insurance']
+    experiment_name = "2026-09-04-de-test"
+    # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
+    data_sources = ['insurance']
 
     opt_params = { # NOTE: ONLY FOR EXPERIMENT TESTING!
-        "lr": 1e-4, 
-        "num_steps": 20, 
+        "lr": 1e-4,
+        "num_steps": 20,
         "batch_size": 32,
         "early_stop_patience": None,
         "eval_period": 500, # period for computing validation loss
@@ -704,6 +732,7 @@ def configured_experiments():
     tail_bounds = [2.5] # for RQS layers, not final tail trafos!
 
     experiments = []
+    print("Setting up experiment plan...")
     for data_source in data_sources:
         for split in range(10):
             repeat_seed = 17*split
