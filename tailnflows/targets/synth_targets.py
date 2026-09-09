@@ -15,9 +15,10 @@ class Target(nn.Module):
     Sample target distributions to test models.
     """
 
-    def __init__(self):
+    def __init__(self, dim: int):
         
         super().__init__()
+        self.dim = dim
 
     def log_prob(self, z: torch.Tensor) -> torch.Tensor:
         
@@ -41,7 +42,7 @@ class NealsFunnel(Target):
             Args:
               gamma (float): Location parameter for z1
             """
-            super().__init__()
+            super().__init__(dim=2)
             self.gamma = gamma
 
         def __str__(self):
@@ -88,8 +89,7 @@ class Student(Target):
               dim (int): Dimension of the distribution
               df (float): Positive degrees of freedom parameter
             """
-            super().__init__()
-            self.dim = dim
+            super().__init__(dim=dim)
             self.df = df
             self.dist = ot.Student(df, dim)
 
@@ -135,10 +135,9 @@ class GaussianCopula(Target):
               df (float): Degrees of freedom for the heavy-tailed Student-t marginals
               corr_matrix (ot.CorrelationMatrix | None): Correlation matrix for the Gaussian copula (if None, identity matrix is used)
             """
-            super().__init__()
+            super().__init__(dim=num_light+num_heavy)
             self.df = df
             self.num_light, self.num_heavy = num_light, num_heavy
-            self.dim = num_light + num_heavy
             self.corr_matrix = corr_matrix if corr_matrix is not None else ot.CorrelationMatrix(self.dim)
             self.copula = ot.NormalCopula(self.corr_matrix)
             self.light_marginals = [ot.Normal(0.0, 1.0) for _ in range(num_light)]
@@ -187,8 +186,7 @@ class CustomGaussianCopula(Target):
            marginals (list[ot.Distribution]): List of univariate marginal distributions for each dimension
            corr_matrix (ot.CorrelationMatrix | None): Correlation matrix for the Gaussian copula (if None, identity matrix is used)
          """
-         super().__init__()
-         self.dim = len(marginals)
+         super().__init__(dim=len(marginals))
          self.corr_matrix = corr_matrix if corr_matrix is not None else ot.CorrelationMatrix(self.dim)
          self.copula = ot.NormalCopula(self.corr_matrix)
          self.marginals = marginals

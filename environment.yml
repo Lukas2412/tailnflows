@@ -3,8 +3,8 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python=3.9
-  - pytorch=1.13.1
+  - python=3.12
+  - pytorch
   - jupyter
   - matplotlib
   - numpy

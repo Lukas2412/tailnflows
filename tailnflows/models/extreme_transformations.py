@@ -67,14 +67,21 @@ class SpecifiedNNKwargs(TypedDict, total=True):
 
 
 def configure_nn(nn_kwargs: NNKwargs) -> SpecifiedNNKwargs:
+    hidden_features = nn_kwargs.get("hidden_features", 5) if nn_kwargs.get("hidden_features", 5) is not None else 5
+    num_blocks = nn_kwargs.get("num_blocks", 2) if nn_kwargs.get("num_blocks", 2) is not None else 2
+    use_residual_blocks = nn_kwargs.get("use_residual_blocks", True) if nn_kwargs.get("use_residual_blocks", True) is not None else True
+    random_mask = nn_kwargs.get("random_mask", False) if nn_kwargs.get("random_mask", False) is not None else False
+    activation = nn_kwargs.get("activation", relu) if nn_kwargs.get("activation", relu) is not None else relu
+    dropout_probability = nn_kwargs.get("dropout_probability", 0.0) if nn_kwargs.get("dropout_probability", 0.0) is not None else 0.0
+    use_batch_norm = nn_kwargs.get("use_batch_norm", False) if nn_kwargs.get("use_batch_norm", False) is not None else False
     return {
-        "hidden_features": nn_kwargs.get("hidden_features", 5),
-        "num_blocks": nn_kwargs.get("num_blocks", 2),
-        "use_residual_blocks": nn_kwargs.get("use_residual_blocks", True),
-        "random_mask": nn_kwargs.get("random_mask", False),
-        "activation": nn_kwargs.get("activation", relu),
-        "dropout_probability": nn_kwargs.get("dropout_probability", 0.0),
-        "use_batch_norm": nn_kwargs.get("use_batch_norm", False),
+        "hidden_features": hidden_features,
+        "num_blocks": num_blocks,
+        "use_residual_blocks": use_residual_blocks,
+        "random_mask": random_mask,
+        "activation": activation,
+        "dropout_probability": dropout_probability,
+        "use_batch_norm": use_batch_norm,
     }
 
 
@@ -1590,9 +1597,6 @@ def r_lin_right_forward(z, lam_pos, a_pos):
     left = z <= a_pos
     right= z >= a_pos
 
-    # TTF
-    Rz_plus, logRp_z_plus = _ttf_sym_value_and_logprime(z, lam_pos)
-
     # Left: Identity
     x_left = z
     lad_left = torch.zeros_like(z)
@@ -1629,7 +1633,7 @@ def r_lin_left_forward(z, lam_neg, a_neg):
     # Compute via r_lin_right_forward
     val_at_minus_z, lad_at_minus_z = r_lin_right_forward(-z, lam_neg, -a_neg)
 
-    return - val_at_minus_z, lad_at_minus_z
+    return -val_at_minus_z, lad_at_minus_z
 
 
 def r_lin_right_inverse(x, lam_pos, a_pos):
@@ -1684,7 +1688,7 @@ def r_lin_left_inverse(x, lam_neg, a_neg):
     # Compute via r_lin_right_inverse
     val_at_minus_x, lad_at_minus_x = r_lin_right_inverse(-x, lam_neg, -a_neg)
 
-    return - val_at_minus_x, lad_at_minus_x
+    return -val_at_minus_x, lad_at_minus_x
 
 
 
@@ -1983,6 +1987,568 @@ def r_qua_left_inverse(x, lam_neg, a_neg, c0_neg, c2_neg):
 
 
 
+####################################################
+# ----- Softlog transform (arXiv:2605.20068) ----- #
+####################################################
+
+def softlog_both_forward(z):
+    """ Light -> Heavy. """
+    x = torch.sign(z) * torch.expm1(torch.abs(z))
+    lad = torch.abs(z)
+    return x, lad
+
+
+def softlog_right_forward(z):
+    """ Light -> Heavy. """
+    left = z <= 0
+    right = z >= 0
+
+    # left
+    x_left = z
+    lad_left = torch.zeros_like(z)
+
+    # right
+    x_right, lad_right = softlog_both_forward(z)
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return x, lad
+
+
+def softlog_left_forward(z):
+    """ Light -> Heavy. """
+    val_at_minus_z, lad_at_minus_z = softlog_right_forward(-z)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def softlog_both_inverse(x):
+    """ Heavy -> Light. """
+    z = torch.sign(x) * torch.log1p(torch.abs(x))
+    lad = -torch.log1p(torch.abs(x))
+    return z, lad
+
+
+def softlog_right_inverse(x):
+    """ Heavy -> Light. """
+    left = x <= 0
+    right = x >= 0
+
+    # left
+    z_left = x
+    lad_left = torch.zeros_like(x)
+
+    # right
+    z_right, lad_right = softlog_both_inverse(x)
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return z, lad
+
+
+def softlog_left_inverse(x):
+    """ Heavy -> Light. """
+    val_at_minus_z, lad_at_minus_z = softlog_right_inverse(-x)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def softlog_lin_both_forward(z, a_pos, a_neg):
+    """ Light -> Heavy. """
+    assert torch.all(a_neg <= 0)
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_minus, logSp_a_minus = softlog_both_forward(a_neg)
+    Sa_plus, logSp_a_plus = softlog_both_forward(a_pos)
+    Sp_a_minus = torch.exp(logSp_a_minus)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = z <= a_neg
+    mid = (z >= a_neg) & (z <= a_pos)
+    right = z >= a_pos
+
+    # Softlog
+    Sz, logSp_z = softlog_both_forward(z)
+
+    # Left
+    x_left = ((Sz - Sa_minus) / Sp_a_minus) + a_neg
+    lad_left = logSp_z - logSp_a_minus
+
+    # Mid: Identity
+    x_mid = z
+    lad_mid = torch.zeros_like(z)
+
+    # Right
+    x_right = ((Sz - Sa_plus) / Sp_a_plus) + a_pos
+    lad_right = logSp_z - logSp_a_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        torch.where(
+            mid,
+            x_mid,
+            x_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
+
+    return x, lad
+
+
+def softlog_lin_right_forward(z, a_pos):
+    """ Light -> Heavy. """
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_plus, logSp_a_plus = softlog_both_forward(a_pos)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = z <= a_pos
+    right = z >= a_pos
+
+    # Left: Identity
+    x_left = z
+    lad_left = torch.zeros_like(z)
+
+    # Right
+    Sz, logSp_z = softlog_both_forward(z)
+    x_right = ((Sz - Sa_plus) / Sp_a_plus) + a_pos
+    lad_right = logSp_z - logSp_a_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return x, lad
+
+
+def softlog_lin_left_forward(z, a_neg):
+    """ Light -> Heavy. """
+    assert torch.all(a_neg <= 0)
+    val_at_minus_z, lad_at_minus_z = softlog_lin_right_forward(-z, -a_neg)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def softlog_lin_both_inverse(x, a_pos, a_neg):
+    """ Heavy -> Light. """
+    assert torch.all(a_neg <= 0)
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_minus, logSp_a_minus = softlog_both_forward(a_neg)
+    Sa_plus, logSp_a_plus = softlog_both_forward(a_pos)
+    Sp_a_minus = torch.exp(logSp_a_minus)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = x <= a_neg
+    mid  = (x >= a_neg) & (x <= a_pos)
+    right= x >= a_pos
+
+    # Left
+    y_left = Sa_minus + Sp_a_minus * (x - a_neg)
+    z_left, lad_left = softlog_both_inverse(y_left)
+    lad_left = torch.log(Sp_a_minus) + lad_left
+
+    # Mid: Identity
+    z_mid = x
+    lad_mid = torch.zeros_like(x)
+
+    # Right
+    y_right = Sa_plus + Sp_a_plus * (x - a_pos)
+    z_right, lad_right = softlog_both_inverse(y_right)
+    lad_right = torch.log(Sp_a_plus) + lad_right
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        torch.where(
+            mid,
+            z_mid,
+            z_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
+
+    return z, lad
+
+
+def softlog_lin_right_inverse(x, a_pos):
+    """ Heavy -> Light. """
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_plus, logSp_a_plus = softlog_both_forward(a_pos)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = x <= a_pos
+    right= x >= a_pos
+
+    # Left: Identity
+    z_left = x
+    lad_left = torch.zeros_like(x)
+
+    # Right
+    y_right = Sa_plus + Sp_a_plus * (x - a_pos)
+    z_right, lad_right = softlog_both_inverse(y_right)
+    lad_right = torch.log(Sp_a_plus) + lad_right
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return z, lad
+
+
+def softlog_lin_left_inverse(x, a_neg):
+    """ Heavy -> Light. """
+    assert torch.all(a_neg <= 0)
+    val_at_minus_x, lad_at_minus_x = softlog_lin_right_inverse(-x, -a_neg)
+    return -val_at_minus_x, lad_at_minus_x
+
+
+def arcsinh_both_forward(z):
+    """ Light -> Heavy. """
+    x = torch.sinh(z)
+    lad = torch.log(torch.cosh(z))
+    return x, lad
+
+
+def arcsinh_right_forward(z):
+    """ Light -> Heavy. """
+    left = z <= 0
+    right = z >= 0
+
+    # left
+    x_left = z
+    lad_left = torch.zeros_like(z)
+
+    # right
+    x_right, lad_right = arcsinh_both_forward(z)
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return x, lad
+
+
+def arcsinh_left_forward(z):
+    """ Light -> Heavy. """
+    val_at_minus_z, lad_at_minus_z = arcsinh_right_forward(-z)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def arcsinh_both_inverse(x):
+    """ Heavy -> Light. """
+    z = torch.arcsinh(x)
+    lad = -0.5 * torch.log1p(x*x)
+    return z, lad
+
+
+def arcsinh_right_inverse(x):
+    """ Heavy -> Light. """
+
+    left = x <= 0
+    right = x >= 0
+
+    # left
+    z_left = x
+    lad_left = torch.zeros_like(x)
+
+    # right
+    z_right, lad_right = arcsinh_both_inverse(x)
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return z, lad
+
+
+def arcsinh_left_inverse(x):
+    """ Heavy -> Light. """
+    val_at_minus_z, lad_at_minus_z = arcsinh_right_inverse(-x)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def arcsinh_lin_both_forward(z, a_pos, a_neg):
+    """ Light -> Heavy. """
+    assert torch.all(a_neg <= 0)
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_minus, logSp_a_minus = arcsinh_both_forward(a_neg)
+    Sa_plus, logSp_a_plus = arcsinh_both_forward(a_pos)
+    Sp_a_minus = torch.exp(logSp_a_minus)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = z <= a_neg
+    mid = (z >= a_neg) & (z <= a_pos)
+    right = z >= a_pos
+
+    # arcsinh
+    Sz, logSp_z = arcsinh_both_forward(z)
+
+    # Left
+    x_left = ((Sz - Sa_minus) / Sp_a_minus) + a_neg
+    lad_left = logSp_z - logSp_a_minus
+
+    # Mid: Identity
+    x_mid = z
+    lad_mid = torch.zeros_like(z)
+
+    # Right
+    x_right = ((Sz - Sa_plus) / Sp_a_plus) + a_pos
+    lad_right = logSp_z - logSp_a_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        torch.where(
+            mid,
+            x_mid,
+            x_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
+
+    return x, lad
+
+
+def arcsinh_lin_right_forward(z, a_pos):
+    """ Light -> Heavy. """
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_plus, logSp_a_plus = arcsinh_both_forward(a_pos)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = z <= a_pos
+    right = z >= a_pos
+
+    # Left: Identity
+    x_left = z
+    lad_left = torch.zeros_like(z)
+
+    # Right
+    Sz, logSp_z = arcsinh_both_forward(z)
+    x_right = ((Sz - Sa_plus) / Sp_a_plus) + a_pos
+    lad_right = logSp_z - logSp_a_plus
+
+    # Case distinction
+    x = torch.where(
+        left,
+        x_left,
+        x_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return x, lad
+
+
+def arcsinh_lin_left_forward(z, a_neg):
+    """ Light -> Heavy. """
+    assert torch.all(a_neg <= 0)
+    val_at_minus_z, lad_at_minus_z = arcsinh_lin_right_forward(-z, -a_neg)
+    return -val_at_minus_z, lad_at_minus_z
+
+
+def arcsinh_lin_both_inverse(x, a_pos, a_neg):
+    """ Heavy -> Light. """
+    assert torch.all(a_neg <= 0)
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_minus, logSp_a_minus = arcsinh_both_forward(a_neg)
+    Sa_plus, logSp_a_plus = arcsinh_both_forward(a_pos)
+    Sp_a_minus = torch.exp(logSp_a_minus)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = x <= a_neg
+    mid  = (x >= a_neg) & (x <= a_pos)
+    right= x >= a_pos
+
+    # Left
+    y_left = Sa_minus + Sp_a_minus * (x - a_neg)
+    z_left, lad_left = arcsinh_both_inverse(y_left)
+    lad_left = torch.log(Sp_a_minus) + lad_left
+
+    # Mid: Identity
+    z_mid = x
+    lad_mid = torch.zeros_like(x)
+
+    # Right
+    y_right = Sa_plus + Sp_a_plus * (x - a_pos)
+    z_right, lad_right = arcsinh_both_inverse(y_right)
+    lad_right = torch.log(Sp_a_plus) + lad_right
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        torch.where(
+            mid,
+            z_mid,
+            z_right,
+        ),
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        torch.where(
+            mid,
+            lad_mid,
+            lad_right,
+        ),
+    )
+
+    return z, lad
+
+
+def arcsinh_lin_right_inverse(x, a_pos):
+    """ Heavy -> Light. """
+    assert torch.all(a_pos >= 0)
+
+    # Precompute anchors
+    Sa_plus, logSp_a_plus = arcsinh_both_forward(a_pos)
+    Sp_a_plus = torch.exp(logSp_a_plus)
+
+    # Regions
+    left = x <= a_pos
+    right= x >= a_pos
+
+    # Left: Identity
+    z_left = x
+    lad_left = torch.zeros_like(x)
+
+    # Right
+    y_right = Sa_plus + Sp_a_plus * (x - a_pos)
+    z_right, lad_right = arcsinh_both_inverse(y_right)
+    lad_right = torch.log(Sp_a_plus) + lad_right
+
+    # Case distinction
+    z = torch.where(
+        left,
+        z_left,
+        z_right,
+    )
+
+    lad = torch.where(
+        left,
+        lad_left,
+        lad_right,
+    )
+
+    return z, lad
+
+
+def arcsinh_lin_left_inverse(x, a_neg):
+    """ Heavy -> Light. """
+    assert torch.all(a_neg <= 0)
+    val_at_minus_x, lad_at_minus_x = arcsinh_lin_right_inverse(-x, -a_neg)
+    return -val_at_minus_x, lad_at_minus_x
+
 
 ####################################################################
 # ----- Transformation classes implementing the above trafos ----- #
@@ -2234,6 +2800,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
     def __init__(
         self,
         features: int,
+        device: Optional[torch.device] = None,
         pos_tail_init: Optional[torch.Tensor] = None,
         neg_tail_init: Optional[torch.Tensor] = None,
         shift_init: Optional[torch.Tensor] = None,
@@ -2249,7 +2816,8 @@ class ModifiedTailAffineMarginalTransform(Transform):
         Reminder:
             The tailparams given here a GPD shape params, which are reciprocal to the corresponding tail indices / degrees of freedom (df)!
         Args:
-            features (int):
+            features (int): num features.
+            device (torch.device, optional): device on which to store transformation params. If None, defaults to the device of tail inits.
             pos_tail_init (torch.Tensor): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
             neg_tail_init (torch.Tensor): tailparams for each marginal transformation for neg directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
             shift_init (torch.Tensor): shift values for each marginal transformation (shape: [features]).
@@ -2269,22 +2837,32 @@ class ModifiedTailAffineMarginalTransform(Transform):
                 LOW_TAIL_INIT, HIGH_TAIL_INIT
             ).sample([features])
 
+        # device
+        if device is None:
+            device = pos_tail_init.device
+        self.device = device
+
         if neg_tail_init is None:
             neg_tail_init = torch.distributions.Uniform(
                 LOW_TAIL_INIT, HIGH_TAIL_INIT
             ).sample([features])
+        neg_tail_init = neg_tail_init.to(self.device)
 
         if a_pos_init is None:
             a_pos_init = torch.ones([features])
+        a_pos_init = a_pos_init.to(self.device)
 
         if a_neg_init is None:
             a_neg_init = -torch.ones([features])
+        a_neg_init = a_neg_init.to(self.device)
 
         if shift_init is None:
-            shift_init = torch.zeros([features])
+            shift_init = torch.zeros([features], device=self.device)
+        shift_init = shift_init.to(self.device)
 
         if scale_init is None:
-            scale_init = torch.ones([features])
+            scale_init = torch.ones([features], device=self.device)
+        scale_init = scale_init.to(self.device)
 
         if not hd_only:
             # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
@@ -2320,10 +2898,10 @@ class ModifiedTailAffineMarginalTransform(Transform):
 
             # compute a_neg and a_pos
             print("Compute a_neg to ensure invertibility...")
-            a_neg_init = -torch.from_numpy(compute_a(neg_tail_init.numpy()))
+            a_neg_init = -torch.from_numpy(compute_a(neg_tail_init.detach().cpu().numpy())).to(self.device)
             print("Computed a_neg: ", a_neg_init)
             print("Compute a_pos to ensure invertibility...")
-            a_pos_init = torch.from_numpy(compute_a(pos_tail_init.numpy()))
+            a_pos_init = torch.from_numpy(compute_a(pos_tail_init.detach().cpu().numpy())).to(self.device)
             print("Computed a_pos: ", a_pos_init)
 
             # compute c2 and c0 params
@@ -2550,7 +3128,449 @@ class ModifiedTailAffineMarginalTransform(Transform):
         lad = lad - torch.log(self.scale)
         return z, lad.sum(dim=-1)
 
+
+class SoftLogMarginalTransform(Transform):
+    """ SoftLog Transform proposed by Pachebat 2026 (arXiv:2605.20068). """
+    def __init__(
+        self,
+        features: int,
+        device: Optional[torch.device] = None,
+        pos_tail_init: Optional[torch.Tensor] = None,
+        neg_tail_init: Optional[torch.Tensor] = None,
+        shift_init: Optional[torch.Tensor] = None,
+        scale_init: Optional[torch.Tensor] = None,
+        hd_only: bool = True,
+        mod: str = "std",
+        a_pos_init: Optional[torch.Tensor] = None,
+        a_neg_init: Optional[torch.Tensor] = None,
+        fix_params: bool = False,
+    ):
+        """ Build marginal softlog transform.
+
+        Args:
+            features (int): num features.
+            device (torch.device, optional): device on which to store transformation params. If None, defaults to the device of tail inits.
+            pos_tail_init (torch.Tensor, optional):  tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            neg_tail_init (torch.Tensor, optional): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            shift_init (torch.Tensor, optional): shift values for each marginal transformation (shape: [features]).
+            scale_init (torch.Tensor, optional): scale values for each marginal transformation (shape: [features]).
+            hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
+            mod (str): Which variant to use. Must be in ["std", "lin"].
+            a_pos_init (torch.Tensor): breakpoints (>= 0.0) for each marginal transformation for pos directions (shape: [features]). Defaults to 1.0 for every marginal if not specified.
+            a_neg_init (torch.Tensor): breakpoints (<= 0.0) for each marginal transformation for neg directions (shape: [features]). Defaults to -1.0 for every marginal if not specified.
+            fix_params (bool, optional): Whether to fix shift and scale parameters or make them learnable.
+        """
+
+        self.features = features
+        super(SoftLogMarginalTransform, self).__init__()
+
+        # random inits if needed
+        if pos_tail_init is None:
+            pos_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+
+        # device
+        if device is None:
+            device = pos_tail_init.device
+        self.device = device
+
+        if neg_tail_init is None:
+            neg_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+        neg_tail_init = neg_tail_init.to(self.device)
+
+        if a_pos_init is None:
+            a_pos_init = torch.ones([features])
+        a_pos_init = a_pos_init.to(self.device)
+
+        if a_neg_init is None:
+            a_neg_init = -torch.ones([features])
+        a_neg_init = a_neg_init.to(self.device)
+
+        if shift_init is None:
+            shift_init = torch.zeros([features])
+        shift_init = shift_init.to(self.device)
+
+        if scale_init is None:
+            scale_init = torch.ones([features])
+        scale_init = scale_init.to(self.device)
+
+        # Hill-gating, like described in Pachebat 2026.
+        # tail-index > 4 <==> tailparam < 0.25
+        pos_tail_init[pos_tail_init < 0.25] = 0.0
+        neg_tail_init[neg_tail_init < 0.25] = 0.0     
+
+        if not hd_only:
+            # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
+            pos_mask = pos_tail_init == 0.0
+            neg_mask = neg_tail_init == 0.0
+            pos_tail_init = pos_tail_init.clone()
+            neg_tail_init = neg_tail_init.clone()
+            pos_tail_init[pos_mask] = 0.25
+            neg_tail_init[neg_mask] = 0.25   
+
+        # create masks for heavy directions
+        self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
+        self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
+        self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
+        self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
+
+        assert torch.Size([features]) == pos_tail_init.shape
+        assert torch.Size([features]) == neg_tail_init.shape
+        assert torch.Size([features]) == shift_init.shape
+        assert torch.Size([features]) == scale_init.shape
+        assert torch.Size([features]) == a_pos_init.shape
+        assert torch.Size([features]) == a_neg_init.shape
+
+        self.hd_only = hd_only
+
+        assert mod in ["std", "lin"]
+        self.mod = mod
+
+        # add parameters
+        self.shift = torch.nn.parameter.Parameter(shift_init)
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        # Linear version has zero derivatives w.r.t. a, so we might as well store a as hyperparameter
+        self.register_buffer("a_pos", a_pos_init.clone())
+        self.register_buffer("a_neg", a_neg_init.clone())
+
+        if fix_params:
+            self.fix_all()
+
+    @property
+    def scale(self):
+        return 1e-3 + softplus(self._unc_scale)
+
+    def fix_shift(self):
+        """Freeze location params."""
+        self.shift.requires_grad = False
+        print("Fixed location params.")
+
+    def fix_scale(self):
+        """Freeze scale params."""
+        self._unc_scale.requires_grad = False
+        print("Fixed scale params.")
+
+    def fix_all(self):
+        """Fix all transformation parameters."""
+        self.fix_shift()
+        self.fix_scale()
+
+    def forward(self, z: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and apply shift & scale.
+        Args:
+            z (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                x (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert z.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor with shape {z.shape}"
+        assert z.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
+
+        if not self.hd_only:
+            # All directions will be transformed
+            if self.mod == "std":
+                x, lad = softlog_both_forward(z)
+            elif self.mod == "lin":
+                x, lad = softlog_lin_both_forward(z, self.a_pos, self.a_neg)
+
+        else:
+            # transform only in heavy-tailed directions
+            x = z.clone()
+            lad = torch.zeros_like(z)
+
+            if self.mod == "std":
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = softlog_right_forward(z[:, self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = softlog_left_forward(z[:, self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = softlog_both_forward(z[:, self.mask_hh])
+            elif self.mod == "lin":
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = softlog_lin_right_forward(z[:, self.mask_lh], self.a_pos[self.mask_lh]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = softlog_lin_left_forward(z[:, self.mask_hl], self.a_neg[self.mask_hl]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = softlog_lin_both_forward(z[:, self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh]) # pyright: ignore[reportIndexIssue]
+ 
+        # Apply shift and scale
+        x = self.shift + x * self.scale
+        lad = lad + torch.log(self.scale)
+
+        return x, lad.sum(dim=-1)
+
+    def inverse(self, x: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and take into account shift & scale.
+        Args:
+            x (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                z (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert x.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor with shape {x.shape}"
+        assert x.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
+
+        # Invert affine transformation
+        x = (x - self.shift) / self.scale
+
+        if not self.hd_only:
+            # All directions will be transformed
+            if self.mod == "std":
+                z, lad = softlog_both_inverse(x)
+            elif self.mod == "lin":
+                z, lad = softlog_lin_both_inverse(x, self.a_pos, self.a_neg)
+
+        else:
+            # transform only in heavy-tailed directions
+            z = x.clone()
+            lad = torch.zeros_like(x)
+
+            if self.mod == "std":
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = softlog_right_inverse(x[:, self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = softlog_left_inverse(x[:, self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = softlog_both_inverse(x[:, self.mask_hh])
+            elif self.mod == "lin":
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = softlog_lin_right_inverse(x[:, self.mask_lh], self.a_pos[self.mask_lh]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = softlog_lin_left_inverse(x[:, self.mask_hl], self.a_neg[self.mask_hl]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = softlog_lin_both_inverse(x[:, self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh])  # pyright: ignore[reportIndexIssue]
+
+        lad = lad - torch.log(self.scale)
+        return z, lad.sum(dim=-1)
     
+
+class ArcsinhMarginalTransform(Transform):
+    """ Arcsinh Transform proposed by Pachebat 2026 (arXiv:2605.20068). """
+    def __init__(
+        self,
+        features: int,
+        device: Optional[torch.device] = None,
+        pos_tail_init: Optional[torch.Tensor] = None,
+        neg_tail_init: Optional[torch.Tensor] = None,
+        shift_init: Optional[torch.Tensor] = None,
+        scale_init: Optional[torch.Tensor] = None,
+        hd_only: bool = True,
+        mod: str = "std",
+        a_pos_init: Optional[torch.Tensor] = None,
+        a_neg_init: Optional[torch.Tensor] = None,
+        fix_params: bool = False,
+    ):
+        """ Build marginal arcsinh transform.
+
+        Args:
+            features (int): num features.
+            device (torch.device, optional): device on which to store transformation params. If None, defaults to the device of tail inits.
+            pos_tail_init (torch.Tensor, optional):  tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            neg_tail_init (torch.Tensor, optional): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            shift_init (torch.Tensor, optional): shift values for each marginal transformation (shape: [features]).
+            scale_init (torch.Tensor, optional): scale values for each marginal transformation (shape: [features]).
+            hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
+            mod (str): Which variant to use. Must be in ["std", "lin"].
+            a_pos_init (torch.Tensor): breakpoints (>= 0.0) for each marginal transformation for pos directions (shape: [features]). Defaults to 1.0 for every marginal if not specified.
+            a_neg_init (torch.Tensor): breakpoints (<= 0.0) for each marginal transformation for neg directions (shape: [features]). Defaults to -1.0 for every marginal if not specified.
+            fix_params (bool, optional): Whether to fix shift and scale parameters or make them learnable.
+        """
+
+        self.features = features
+        super(ArcsinhMarginalTransform, self).__init__()
+
+        # random inits if needed
+        if pos_tail_init is None:
+            pos_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+
+        # device
+        if device is None:
+            device = pos_tail_init.device
+        self.device = device
+
+        if neg_tail_init is None:
+            neg_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+        neg_tail_init = neg_tail_init.to(self.device)
+
+        if a_pos_init is None:
+            a_pos_init = torch.ones([features])
+        a_pos_init = a_pos_init.to(self.device)
+
+        if a_neg_init is None:
+            a_neg_init = -torch.ones([features])
+        a_neg_init = a_neg_init.to(self.device)
+
+        if shift_init is None:
+            shift_init = torch.zeros([features])
+        shift_init = shift_init.to(self.device)
+
+        if scale_init is None:
+            scale_init = torch.ones([features])
+        scale_init = scale_init.to(self.device)
+
+        # Hill-gating, like described in Pachebat 2026.
+        # tail-index > 4 <==> tailparam < 0.25
+        pos_tail_init[pos_tail_init < 0.25] = 0.0
+        neg_tail_init[neg_tail_init < 0.25] = 0.0     
+
+        if not hd_only:
+            # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
+            pos_mask = pos_tail_init == 0.0
+            neg_mask = neg_tail_init == 0.0
+            pos_tail_init = pos_tail_init.clone()
+            neg_tail_init = neg_tail_init.clone()
+            pos_tail_init[pos_mask] = 0.25
+            neg_tail_init[neg_mask] = 0.25   
+
+        # create masks for heavy directions
+        self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
+        self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
+        self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
+        self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
+
+        assert torch.Size([features]) == pos_tail_init.shape
+        assert torch.Size([features]) == neg_tail_init.shape
+        assert torch.Size([features]) == shift_init.shape
+        assert torch.Size([features]) == scale_init.shape
+        assert torch.Size([features]) == a_pos_init.shape
+        assert torch.Size([features]) == a_neg_init.shape
+
+        self.hd_only = hd_only
+
+        assert mod in ["std", "lin"]
+        self.mod = mod
+
+        # add parameters
+        self.shift = torch.nn.parameter.Parameter(shift_init)
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        # Linear version has zero derivatives w.r.t. a, so we might as well store a as hyperparameter
+        self.register_buffer("a_pos", a_pos_init)
+        self.register_buffer("a_neg", a_neg_init)
+
+        if fix_params:
+            self.fix_all()
+
+    @property
+    def scale(self):
+        return 1e-3 + softplus(self._unc_scale)
+
+    def fix_shift(self):
+        """Freeze location params."""
+        self.shift.requires_grad = False
+        print("Fixed location params.")
+
+    def fix_scale(self):
+        """Freeze scale params."""
+        self._unc_scale.requires_grad = False
+        print("Fixed scale params.")
+
+    def fix_all(self):
+        """Fix all transformation parameters."""
+        self.fix_shift()
+        self.fix_scale()
+
+    def forward(self, z: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and apply shift & scale.
+        Args:
+            z (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                x (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert z.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor with shape {z.shape}"
+        assert z.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
+
+        if not self.hd_only:
+            # All directions will be transformed
+            if self.mod == "std":
+                x, lad = arcsinh_both_forward(z)
+            elif self.mod == "lin":
+                x, lad = arcsinh_lin_both_forward(z, self.a_pos, self.a_neg)
+
+        else:
+            # transform only in heavy-tailed directions
+            x = z.clone()
+            lad = torch.zeros_like(z)
+
+            if self.mod == "std":
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_right_forward(z[:, self.mask_lh])
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_left_forward(z[:, self.mask_hl])
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_both_forward(z[:, self.mask_hh])
+            elif self.mod == "lin":
+                if self.mask_lh.any():
+                    x[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_lin_right_forward(z[:, self.mask_lh], self.a_pos[self.mask_lh]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hl.any():
+                    x[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_lin_left_forward(z[:, self.mask_hl], self.a_neg[self.mask_hl]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hh.any():
+                    x[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_lin_both_forward(z[:, self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh]) # pyright: ignore[reportIndexIssue]
+ 
+        # Apply shift and scale
+        x = self.shift + x * self.scale
+        lad = lad + torch.log(self.scale)
+
+        return x, lad.sum(dim=-1)
+
+    def inverse(self, x: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and take into account shift & scale.
+        Args:
+            x (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                z (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert x.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor with shape {x.shape}"
+        assert x.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
+
+        # Invert affine transformation
+        x = (x - self.shift) / self.scale
+
+        if not self.hd_only:
+            # All directions will be transformed
+            if self.mod == "std":
+                z, lad = arcsinh_both_inverse(x)
+            elif self.mod == "lin":
+                z, lad = arcsinh_lin_both_inverse(x, self.a_pos, self.a_neg)
+
+        else:
+            # transform only in heavy-tailed directions
+            z = x.clone()
+            lad = torch.zeros_like(x)
+
+            if self.mod == "std":
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_right_inverse(x[:, self.mask_lh])
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_left_inverse(x[:, self.mask_hl])
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_both_inverse(x[:, self.mask_hh])
+            elif self.mod == "lin":
+                if self.mask_lh.any():
+                    z[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_lin_right_inverse(x[:, self.mask_lh], self.a_pos[self.mask_lh]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hl.any():
+                    z[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_lin_left_inverse(x[:, self.mask_hl], self.a_neg[self.mask_hl]) # pyright: ignore[reportIndexIssue]
+                if self.mask_hh.any():
+                    z[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_lin_both_inverse(x[:, self.mask_hh], self.a_pos[self.mask_hh], self.a_neg[self.mask_hh]) # pyright: ignore[reportIndexIssue]
+
+        lad = lad - torch.log(self.scale)
+        return z, lad.sum(dim=-1)
 
 class AsymmetricTailAffineMarginalTransform(Transform):
     """
