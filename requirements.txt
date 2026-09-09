@@ -16,3 +16,4 @@ torch_erf @ git+https://github.com/redsnic/torch_erf/
 normflows
 torchdiffeq
 flow_matching
+openturns
