@@ -2610,11 +2610,14 @@ class AffineMarginalTransform(Transform):
     def __init__(
         self,
         features,
+        device,
         shift_init=None,
         scale_init=None,
     ):
         self.features = features
         super(AffineMarginalTransform, self).__init__()
+
+        self.device = device
 
         # random inits if needed
         if shift_init is None:
@@ -2625,6 +2628,9 @@ class AffineMarginalTransform(Transform):
 
         assert torch.Size([features]) == shift_init.shape
         assert torch.Size([features]) == scale_init.shape
+
+        shift_init = shift_init.to(self.device)
+        scale_init = scale_init.to(self.device)
 
         # convert to unconstrained versions
         self._unc_shift = torch.nn.parameter.Parameter(shift_init)

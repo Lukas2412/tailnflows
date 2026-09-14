@@ -27,6 +27,7 @@ def train(
     lr_scheduler=None,
     preprocess_transformation=None,
     eval_period=1,
+    device="cuda",
 ):
     parameters = list(model.parameters())
     if optimizer is None:
@@ -71,8 +72,9 @@ def train(
         getattr(optimizer, 'train', lambda: None)()
 
         batch_ix = next(batches)
-        batch = x_trn[batch_ix, :]
+        batch = x_trn[batch_ix, :].to(device)
         optimizer.zero_grad()
+
         trn_loss = -model.log_prob(batch).mean()
         trn_loss.backward()
 

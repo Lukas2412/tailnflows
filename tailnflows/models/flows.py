@@ -50,6 +50,7 @@ from tailnflows.models.base_distribution import (
     NormalMixture,
 )
 from marginal_tail_adaptive_flows.utils.tail_permutation import (
+    TailRandomPermutation,
     TailLU,
 )
 from tailnflows.models.comet_models import MarginalLayer, Logit
@@ -61,7 +62,7 @@ def _get_intial_permutation(degrees_of_freedom):
     num_light = int(sum(df == 0 for df in degrees_of_freedom))
     light_ix = 0
     heavy_ix = num_light
-    perm_ix = torch.zeros(len(degrees_of_freedom), dtype=torch.int)
+    perm_ix = torch.zeros(len(degrees_of_freedom), dtype=torch.int, device=degrees_of_freedom.device)
     for ix, df in enumerate(degrees_of_freedom):
         if df == 0:
             perm_ix[ix] = light_ix
@@ -274,6 +275,9 @@ def base_nsf_transform(
     linear_layer: bool = False,
     u_linear_layer: bool = False,
     nn_kwargs: NNKwargs = {},
+    mtaf: bool = False,
+    num_light: Optional[int] = None,
+    num_heavy: Optional[int] = None,
 ) -> list[Transform]:
     """
     An autoregressive RQS transform of configurable depth.
@@ -281,7 +285,7 @@ def base_nsf_transform(
     transforms: list[Transform] = []
 
     if "hidden_features" not in nn_kwargs:
-        nn_kwargs["hidden_features"] = dim * 2
+        nn_kwargs["hidden_features"] = dim * 2 # use hidden_dim = 2 * feature_dim if not specified explicitly
 
     specified_nn_kwargs = configure_nn(nn_kwargs)
 
@@ -304,13 +308,23 @@ def base_nsf_transform(
 
     for layer in range(depth):
         if layer > 0 and random_permute:
-            transforms.append(RandomPermutation(dim))
+            if mtaf and num_light > 0 and num_heavy > 0:
+                transforms.append(TailRandomPermutation(num_light, num_heavy, dim)) # permute only within heavy/light sets
+            else:
+                transforms.append(RandomPermutation(dim))
 
         if layer > 0 and linear_layer:
-            transforms.append(LULinear(dim, identity_init=True))
+            if mtaf and num_light > 0 and num_heavy > 0:
+                print("No linear added for mTAF model!")
+                pass # have no mtaf analogue
+            else:
+                transforms.append(LULinear(dim, identity_init=True))
 
         if layer > 0 and u_linear_layer:
-            transforms.append(UnitLULinear(dim, identity_init=True))
+            if mtaf and num_light > 0 and num_heavy > 0:
+                transforms.append(TailLU(dim, num_heavy)) # use data-driven LU layer
+            else:
+                transforms.append(UnitLULinear(dim, identity_init=True))
 
         transforms.append(
             MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
@@ -490,12 +504,13 @@ def build_base_model(
     constraint_transformation: Optional[Transform] = None,
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
+    device: torch.device = "cpu",
 ):
     # base distribution
     base_distribution = StandardNormal([dim])
 
     # final transformation
-    final_transformation = AffineMarginalTransform(dim)
+    final_transformation = AffineMarginalTransform(dim, device)
 
     return ExperimentFlow(
         use=use,
@@ -719,7 +734,7 @@ def build_gtaf(
     base_distribution = TrainableStudentT(dim, init=tail_init)
 
     # final transformation
-    final_transformation = AffineMarginalTransform(dim)
+    final_transformation = AffineMarginalTransform(dim, device)
 
     return ExperimentFlow(
         use=use,
@@ -778,7 +793,7 @@ def build_mtaf(
     final_transformation = CompositeTransform(
         [
             initial_permutation,
-            AffineMarginalTransform(dim),
+            AffineMarginalTransform(dim, device),
         ]
     )
 
@@ -798,13 +813,14 @@ def build_mtaf(
     # check for any rotations in the base transformation, these invalidate the
     # mtaf assumptions, we need to preserve groups of heavy/light
     base_transformations = mtaf.get_base_transformation()._transforms
-    for transformation in base_transformations:
-        if (
-            isinstance(transformation, LULinear)
-            or isinstance(transformation, HouseholderSequence)
-            or isinstance(transformation, RandomPermutation)
-        ):
-            raise Exception("Non heavy/light preserving transformation in mtaf flow!")
+    if num_light > 0 and num_heavy > 0: # both light- and heavy-tailed marginals present
+        for transformation in base_transformations:
+            if (
+                isinstance(transformation, LULinear)
+                or isinstance(transformation, HouseholderSequence)
+                or isinstance(transformation, RandomPermutation)
+            ):
+                raise Exception("Non heavy/light preserving transformation in mtaf flow!")
 
     return mtaf
 
@@ -862,6 +878,7 @@ def build_mix_normal(
     constraint_transformation: Optional[Transform] = None,
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
+    device: torch.device = "cpu",
 ):
     # model specific settings
     n_component = model_kwargs.get("n_component", 10)
@@ -870,7 +887,7 @@ def build_mix_normal(
     base_distribution = NormalMixture(dim, n_component)
 
     # final transformation
-    final_transformation = AffineMarginalTransform(dim)
+    final_transformation = AffineMarginalTransform(dim, device)
 
     return ExperimentFlow(
         use=use,
@@ -889,12 +906,13 @@ def build_gen_normal(
     constraint_transformation: Optional[Transform] = None,
     final_rotation: FinalRotation = None,
     model_kwargs: ModelKwargs = {},
+    device: torch.device = "cpu",
 ):
     # base distribution
     base_distribution = GeneralisedNormal(dim)
 
     # final transformation
-    final_transformation = AffineMarginalTransform(dim)
+    final_transformation = AffineMarginalTransform(dim, device)
 
     return ExperimentFlow(
         use=use,
