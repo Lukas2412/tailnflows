@@ -164,6 +164,8 @@ cython_debug/
 experiment_output/*
 data/*
 trash/*
+plots/*
+experiments/density_estimation_real_data/plots/*
 rough_work/*
 *.code-workspace
 
