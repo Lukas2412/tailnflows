@@ -712,7 +712,7 @@ def run_experiment(
     }
 
     output_dict["final_trafo_type"] = type(model.get_final_transformation())
-    output_dict["final_trafo_params"] = model.get_final_transformation().named_parameters()
+    output_dict["final_trafo_params"] = list(model.get_final_transformation().named_parameters())
 
     if save_samples:
         output_dict["synth_samps"] = synth_samps
