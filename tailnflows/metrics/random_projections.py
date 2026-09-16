@@ -115,8 +115,10 @@ def plot_rand_proj_stats(data_true: torch.Tensor, data_synth: dict[str, torch.Te
             handles.append(h)
             labels.append(model)
         # create diagonal line
-        diag = np.linspace(np.min([np.min(results["true"][stat]), np.min(results[models[0]][stat])]),
-                           np.max([np.max(results["true"][stat]), np.max(results[models[0]][stat])]))
+        # diag = np.linspace(np.min([np.min(results["true"][stat]), np.min(results[models[0]][stat])]),
+        #                    np.max([np.max(results["true"][stat]), np.max(results[models[0]][stat])]))
+        diag = np.linspace(np.min(results["true"][stat]),
+                           np.max(results["true"][stat]))
         # add legend to the side
         plt.legend(
                 handles,
@@ -127,7 +129,7 @@ def plot_rand_proj_stats(data_true: torch.Tensor, data_synth: dict[str, torch.Te
                 borderaxespad=0,           # No padding between axes and legend
                 frameon=False              # Cleaner look without frame
             )
-        plt.plot(diag, diag, "--", label='_nolegend_')
+        plt.plot(diag, diag, "--")
 
         plt.title(stat)
         plt.ticklabel_format(style="sci", scilimits=(0, 0))

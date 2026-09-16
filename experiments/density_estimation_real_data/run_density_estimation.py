@@ -7,7 +7,7 @@ import torch
 DEFAULT_DTYPE = torch.float32
 torch.set_default_dtype(DEFAULT_DTYPE)
 
-gpu_ix = 0
+gpu_ix = 3
 if torch.cuda.is_available():
     DEFAULT_DEVICE = torch.device(f"cuda:{gpu_ix}")
     torch.cuda.set_device(gpu_ix) # tensors with device="cuda" will be put on cuda{gpu_ix}
@@ -23,6 +23,7 @@ from tailnflows.train import data_fit
 from tailnflows.utils import add_raw_data, get_experiment_output_path, load_raw_data, get_data_path, add_experiment_output_data, parallel_runner
 from tailnflows.models.preprocessing import inverse_and_lad as t_to_norm_inverse_and_lad
 from tailnflows.models.extreme_transformations import NNKwargs
+from tailnflows.models.utils import invertibility_check
 from tailnflows.metrics import metrics
 
 """
@@ -37,7 +38,7 @@ def base_rqs_spec(dim: int, model_config: dict, num_light: Optional[int] = None,
         tail_bound=model_config.get('tail_bound', 3),
         affine_autoreg_layer=True,
         depth=model_config.get('depth', 1),
-        u_linear_layer=True, # alternate rqs layers with LU layers (for >= 2 rqs layers)
+        u_linear_layer=True, # alternate rqs layers with LU layers (for depth >= 2. A final LU rotation is appended regardless of depth).
         nn_kwargs=NNKwargs(
             hidden_features=model_config.get("hidden_features"),
             num_blocks=model_config.get("num_blocks"),
@@ -512,7 +513,7 @@ def run_experiment(
     # general setup
     out_path = f"{data_source}/{experiment_name}"
     loss_path = f"{get_experiment_output_path()}/{out_path}/losses"
-    results_path = f"{get_experiment_output_path()}/{out_path}/results"
+    results_path = f"{out_path}/results"
 
     torch.manual_seed(seed)
 
@@ -585,18 +586,27 @@ def run_experiment(
 
     label = f'{data_source}-{split}-{model_label}'
 
+    opt_params["num_steps"] = opt_params["num_epochs"] * x_trn.shape[0] // opt_params["batch_size"]
+    opt_params_copy = opt_params.copy()
+    del opt_params_copy["num_epochs"]
+
     # Train and evaluate model
     fit_data = data_fit.train(
         model,
         x_trn.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
         x_val.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
         x_tst.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
-        **opt_params,
+        **opt_params_copy,
         label=label,
         preprocess_transformation=preprocessor,
         device=DEFAULT_DEVICE,
     )
     tst_loss, val_loss, tst_ix, losses, vlosses, steps, hook_data = fit_data
+
+    # Invertibility check
+    samps = torch.randn(16000, dim, device=DEFAULT_DEVICE)
+    is_invertible = invertibility_check(model, samps)
+    print(f"Inveritbility check: {is_invertible}")
 
     # Compute metrics
     dfs_tensor = torch.tensor(metadata["dfs"])
@@ -656,6 +666,7 @@ def run_experiment(
         "tst_ix": tst_ix,
         "loss_path": loss_path,
         "loss_ix": loss_ix,
+        "model_str": model.__repr__(),
         **opt_params,
         **model_config,
     }
@@ -667,7 +678,7 @@ def run_experiment(
         output_dict["model"] = model
 
     add_experiment_output_data(
-        results_path,
+        results_path ,
         label,
         output_dict,
         force_write=True,
@@ -679,7 +690,7 @@ def run_experiment(
 optimisation_overrides = {
     'sp500': {
         "lr": 5e-4, 
-        "num_steps": 2_000,
+        "num_epochs": 400,
         "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
@@ -687,7 +698,7 @@ optimisation_overrides = {
     },
     'fama5': {
         "lr": 5e-4, 
-        "num_steps": 8_000, 
+        "num_epochs": 400, 
         "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
@@ -695,7 +706,7 @@ optimisation_overrides = {
     },
     'insurance': {
         "lr": 5e-4, 
-        "num_steps": 2_000,
+        "num_epochs": 400,
         "batch_size": 512, 
         "early_stop_patience": 500,
         "eval_period": 25,
@@ -737,13 +748,13 @@ def configured_experiments():
         "gtaf"
     ]
 
-    experiment_name = "2026-09-14-de-insurance"
+    experiment_name = "2026-09-16-de"
     # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
     data_sources = ['insurance']
 
     opt_params = { # NOTE: ONLY FOR EXPERIMENT TESTING!
         "lr": 1e-4,
-        "num_steps": 20,
+        "num_epochs": 400,
         "batch_size": 32,
         "early_stop_patience": None,
         "eval_period": 500, # period for computing validation loss
@@ -795,7 +806,8 @@ def configured_experiments():
                                 "depth": depth,
                                 "num_bins": num_bins,
                                 "tail_bound": tail_bound,
-                            } # hidden dimension will be 2 * feature dim
+                                "use_batch_norm": True, # for stability of NSFs
+                            } # hidden dimension will be feature_dim + 10
 
                             for model_label in model_labels:
                                 

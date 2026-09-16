@@ -67,6 +67,7 @@ class SpecifiedNNKwargs(TypedDict, total=True):
 
 
 def configure_nn(nn_kwargs: NNKwargs) -> SpecifiedNNKwargs:
+    """ NOTE: Fixed default values will be used for unspecified arguments! """
     hidden_features = nn_kwargs.get("hidden_features", 5) if nn_kwargs.get("hidden_features", 5) is not None else 5
     num_blocks = nn_kwargs.get("num_blocks", 2) if nn_kwargs.get("num_blocks", 2) is not None else 2
     use_residual_blocks = nn_kwargs.get("use_residual_blocks", True) if nn_kwargs.get("use_residual_blocks", True) is not None else True

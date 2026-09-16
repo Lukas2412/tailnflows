@@ -284,8 +284,12 @@ def base_nsf_transform(
     """
     transforms: list[Transform] = []
 
+    # use hidden_features = dim + 10 if not specified
     if "hidden_features" not in nn_kwargs:
-        nn_kwargs["hidden_features"] = dim * 2 # use hidden_dim = 2 * feature_dim if not specified explicitly
+        nn_kwargs["hidden_features"] = dim + 10
+    else: # "hidden_features" in nn_kwargs, but could be None
+        if nn_kwargs["hidden_features"] is None:
+            nn_kwargs["hidden_features"] = dim + 10
 
     specified_nn_kwargs = configure_nn(nn_kwargs)
 

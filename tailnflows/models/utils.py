@@ -75,3 +75,33 @@ class Softplus(Transform):
             )
         )
         return outputs, logabsdet
+
+
+def invertibility_check(flow, samps: torch.Tensor, tol: float = 1e-4) -> bool:
+    """ Check if a flow model is invertible by sending a batch of points through the flow (in both directions).
+
+    Args:
+        flow: The flow model to test invertibility for. Must implement forward() and inverse() methods.
+        samps (torch.Tensor): A data batch (shape [batch, features]), e.g. sampled from N(0,I).
+        tol (float): Numerical tolerance for the comparison (default: 1e-4).
+
+    Returns:
+        bool: True if the inverse->forward processed batch agrees with the original batch (up to the numerical tolerance), oterwise False.
+    """
+    is_invertible = True
+
+    # Apply inverse (noise->data) transformation
+    processed_samps = flow._transform.inverse(samps)
+    if isinstance(processed_samps, tuple):
+        processed_samps = processed_samps[0] # only samples, not lad
+
+    # Apply forward(data->noise) transformation
+    processed_samps = flow._transform.forward(processed_samps)
+    if isinstance(processed_samps, tuple):
+        processed_samps = processed_samps[0] # only samples, not lad
+
+    # Inspect difference between original and processed samples
+    if not torch.allclose(processed_samps, samps, rtol=tol, atol=tol):
+        is_invertible = False
+
+    return is_invertible
