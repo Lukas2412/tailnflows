@@ -414,6 +414,44 @@ def arcsinh_rqs_lin_hdonly(dim: int, metadata: dict, model_config: dict) -> flow
     )
 
 
+def softarcsinh_rqs(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final softarcsinh transformation. """
+    return flows.build_softarcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
+            hd_only=False,
+            b_pos_init=[1.0 for _ in range(dim)],
+            b_neg_init=[1.0 for _ in range(dim)],
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
+def softarcsinh_rqs_hdonly(dim: int, metadata: dict, model_config: dict) -> flows.ExperimentFlow:
+    """ Builds a NSF model with a final softarcsinh transformation. """
+    return flows.build_softarcsinh_m(
+        dim,
+        use="density_estimation",
+        base_transformation_init=partial(base_rqs_spec, model_config=model_config),
+        model_kwargs=dict(
+            device=DEFAULT_DEVICE,
+            pos_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['pos_dfs']],
+            neg_tail_init=[1 / df if df != 0.0 else 0.25 for df in metadata['neg_dfs']],
+            hd_only=True,
+            b_pos_init=[1.0 for _ in range(dim)],
+            b_neg_init=[1.0 for _ in range(dim)],
+            fix_params=False,
+        ),
+        final_rotation="lu",
+    )
+
+
 def gtaf_rqs(dim: int, metadata: dict, model_config: dict, device: torch.device = DEFAULT_DEVICE) -> flows.ExperimentFlow:
     """ Builds a NSF with a trainable Student-t base distribution with marginal dfs sampled uniformly from [1.0, 20.0]. """
     return flows.build_gtaf(
@@ -487,6 +525,8 @@ model_definitions = {
     "arcsinh_hdonly": arcsinh_rqs_hdonly,
     "arcsinh_lin": arcsinh_rqs_lin,
     "arcsinh_lin_hdonly": arcsinh_rqs_lin_hdonly,
+    "softarcsinh": softarcsinh_rqs,
+    "softarcsinh_hdonly": softarcsinh_rqs_hdonly,
     "gtaf": gtaf_rqs,
     "mtaf": mtaf_rqs,
     "normal":  normal,
@@ -671,6 +711,9 @@ def run_experiment(
         **model_config,
     }
 
+    output_dict["final_trafo_type"] = type(model.get_final_transformation())
+    output_dict["final_trafo_params"] = model.get_final_transformation().named_parameters()
+
     if save_samples:
         output_dict["synth_samps"] = synth_samps
 
@@ -726,29 +769,31 @@ def configured_experiments():
     """ Run several experiments in parallel by modifying the following code. """
 
     model_labels = [
-        "normal",
-        # "ttf",
-        "ttf_hdonly",
-        # "ttf_fix", 
-        # "ttf_lin",
-        "ttf_lin_hdonly",
-        # "ttf_qua",
-        "ttf_qua_hdonly",
-        # "ttf_erfi",
-        "ttf_erfi_hdonly",
-        # "softlog",
-        "softlog_hdonly",
-        # "softlog_lin",
-        "softlog_lin_hdonly",
-        # "arcsinh",
-        "arcsinh_hdonly",
-        # "arcsinh_lin",
-        "arcsinh_lin_hdonly",
-        "mtaf", 
-        "gtaf"
+        # "normal",
+        # # "ttf",
+        # "ttf_hdonly",
+        # # "ttf_fix", 
+        # # "ttf_lin",
+        # "ttf_lin_hdonly",
+        # # "ttf_qua",
+        # "ttf_qua_hdonly",
+        # # "ttf_erfi",
+        # "ttf_erfi_hdonly",
+        # # "softlog",
+        # "softlog_hdonly",
+        # # "softlog_lin",
+        # "softlog_lin_hdonly",
+        # # "arcsinh",
+        # "arcsinh_hdonly",
+        # # "arcsinh_lin",
+        # "arcsinh_lin_hdonly",
+        "softarcsinh",
+        "softarcsinh_hdonly",
+        # "mtaf", 
+        # "gtaf"
     ]
 
-    experiment_name = "2026-09-16-de"
+    experiment_name = "2026-09-16-de-softarcsinh-test"
     # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
     data_sources = ['insurance']
 

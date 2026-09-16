@@ -2765,7 +2765,7 @@ class TailAffineMarginalTransform(Transform):
         self._unc_pos_tail = torch.nn.parameter.Parameter(inv_sftplus(pos_tail_init))
         self._unc_neg_tail = torch.nn.parameter.Parameter(inv_sftplus(neg_tail_init))
         self.shift = torch.nn.parameter.Parameter(shift_init)
-        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init - 1e-3))
 
     @property
     def pos_tail(self):
@@ -2933,7 +2933,7 @@ class ModifiedTailAffineMarginalTransform(Transform):
         self._unc_pos_tail = torch.nn.parameter.Parameter(inv_sftplus(pos_tail_init))
         self._unc_neg_tail = torch.nn.parameter.Parameter(inv_sftplus(neg_tail_init))
         self.shift = torch.nn.parameter.Parameter(shift_init)
-        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init - 1e-3))
         self._unc_a_pos = torch.nn.parameter.Parameter(inv_sftplus(a_pos_init))
         self._unc_a_neg = torch.nn.parameter.Parameter(inv_sftplus(-a_neg_init))
 
@@ -3238,7 +3238,7 @@ class SoftLogMarginalTransform(Transform):
 
         # add parameters
         self.shift = torch.nn.parameter.Parameter(shift_init)
-        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init - 1e-3))
         # Linear version has zero derivatives w.r.t. a, so we might as well store a as hyperparameter
         self.register_buffer("a_pos", a_pos_init.clone())
         self.register_buffer("a_neg", a_neg_init.clone())
@@ -3384,7 +3384,7 @@ class ArcsinhMarginalTransform(Transform):
             shift_init (torch.Tensor, optional): shift values for each marginal transformation (shape: [features]).
             scale_init (torch.Tensor, optional): scale values for each marginal transformation (shape: [features]).
             hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
-            mod (str): Which variant to use. Must be in ["std", "lin"].
+            mod (str): Which variant to use. Must be in ["std", "lin", "slin"].
             a_pos_init (torch.Tensor): breakpoints (>= 0.0) for each marginal transformation for pos directions (shape: [features]). Defaults to 1.0 for every marginal if not specified.
             a_neg_init (torch.Tensor): breakpoints (<= 0.0) for each marginal transformation for neg directions (shape: [features]). Defaults to -1.0 for every marginal if not specified.
             fix_params (bool, optional): Whether to fix shift and scale parameters or make them learnable.
@@ -3432,7 +3432,7 @@ class ArcsinhMarginalTransform(Transform):
         neg_tail_init[neg_tail_init < 0.25] = 0.0     
 
         if not hd_only:
-            # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 1e-3
+            # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 0.25
             pos_mask = pos_tail_init == 0.0
             neg_mask = neg_tail_init == 0.0
             pos_tail_init = pos_tail_init.clone()
@@ -3455,12 +3455,12 @@ class ArcsinhMarginalTransform(Transform):
 
         self.hd_only = hd_only
 
-        assert mod in ["std", "lin"]
+        assert mod in ["std", "lin", "slin"]
         self.mod = mod
 
         # add parameters
         self.shift = torch.nn.parameter.Parameter(shift_init)
-        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init))
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init - 1e-3))
         # Linear version has zero derivatives w.r.t. a, so we might as well store a as hyperparameter
         self.register_buffer("a_pos", a_pos_init)
         self.register_buffer("a_neg", a_neg_init)
@@ -3578,6 +3578,238 @@ class ArcsinhMarginalTransform(Transform):
 
         lad = lad - torch.log(self.scale)
         return z, lad.sum(dim=-1)
+
+
+class SoftArcsinhMarginalTransform(Transform):
+    """ Parametrized Arcsinh Transform x -> b*arcsinh(x/b). """
+    def __init__(
+        self,
+        features: int,
+        device: Optional[torch.device] = None,
+        pos_tail_init: Optional[torch.Tensor] = None,
+        neg_tail_init: Optional[torch.Tensor] = None,
+        shift_init: Optional[torch.Tensor] = None,
+        scale_init: Optional[torch.Tensor] = None,
+        hd_only: bool = True,
+        b_pos_init: Optional[torch.Tensor] = None,
+        b_neg_init: Optional[torch.Tensor] = None,
+        fix_params: bool = False,
+    ):
+        """ Build marginal arcsinh transform.
+
+        Args:
+            features (int): num features.
+            device (torch.device, optional): device on which to store transformation params. If None, defaults to the device of tail inits.
+            pos_tail_init (torch.Tensor, optional):  tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            neg_tail_init (torch.Tensor, optional): tailparams for each marginal transformation for pos directions (shape: [features]). Light-tailed directions are marked by the value 0 (in accordance with the GPD definition).
+            shift_init (torch.Tensor, optional): shift values for each marginal transformation (shape: [features]).
+            scale_init (torch.Tensor, optional): scale values for each marginal transformation (shape: [features]).
+            hd_only (bool): If set to True, only heavy-tailed marginals will be transformed in their heavy-tailed direction(s). If set to False, light-tailed directions will also be transformed with tailparam 1e-3.
+            b_pos_init (torch.Tensor): b-params for each marginal transformation for pos directions (shape: [features]). Defaults to 1.0 for every marginal if not specified.
+            b_neg_init (torch.Tensor): b-params for each marginal transformation for neg directions (shape: [features]). Defaults to -1.0 for every marginal if not specified.
+            fix_params (bool, optional): Whether to fix shift and scale parameters or make them learnable.
+        """
+
+        self.features = features
+        super(SoftArcsinhMarginalTransform, self).__init__()
+
+        # random inits if needed
+        if pos_tail_init is None:
+            pos_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+
+        # device
+        if device is None:
+            device = pos_tail_init.device
+        self.device = device
+
+        if neg_tail_init is None:
+            neg_tail_init = torch.distributions.Uniform(
+                LOW_TAIL_INIT, HIGH_TAIL_INIT
+            ).sample([features])
+        neg_tail_init = neg_tail_init.to(self.device)
+
+        if b_pos_init is None:
+            b_pos_init = torch.ones([features])
+        b_pos_init = b_pos_init.to(self.device)
+
+        if b_neg_init is None:
+            b_neg_init = torch.ones([features])
+        b_neg_init = b_neg_init.to(self.device)
+
+        if shift_init is None:
+            shift_init = torch.zeros([features])
+        shift_init = shift_init.to(self.device)
+
+        if scale_init is None:
+            scale_init = torch.ones([features])
+        scale_init = scale_init.to(self.device)
+
+        # Hill-gating, like described in Pachebat 2026.
+        # tail-index > 4 <==> tailparam < 0.25
+        pos_tail_init[pos_tail_init < 0.25] = 0.0
+        neg_tail_init[neg_tail_init < 0.25] = 0.0     
+
+        if not hd_only:
+            # replace 0 entries in tailparams (corresponding to light tails) with small lambda = 0.25
+            pos_mask = pos_tail_init == 0.0
+            neg_mask = neg_tail_init == 0.0
+            pos_tail_init = pos_tail_init.clone()
+            neg_tail_init = neg_tail_init.clone()
+            pos_tail_init[pos_mask] = 0.25
+            neg_tail_init[neg_mask] = 0.25   
+
+        # create masks for heavy directions
+        self.mask_ll = (neg_tail_init == 0) & (pos_tail_init == 0)
+        self.mask_lh = (neg_tail_init == 0) & (pos_tail_init > 0)
+        self.mask_hl = (neg_tail_init > 0) & (pos_tail_init == 0)
+        self.mask_hh = (neg_tail_init > 0) & (pos_tail_init > 0)
+
+        assert torch.Size([features]) == pos_tail_init.shape
+        assert torch.Size([features]) == neg_tail_init.shape
+        assert torch.Size([features]) == shift_init.shape
+        assert torch.Size([features]) == scale_init.shape
+        assert torch.Size([features]) == b_pos_init.shape
+        assert torch.Size([features]) == b_neg_init.shape
+
+        self.hd_only = hd_only
+
+        # add parameters
+        self.shift = torch.nn.parameter.Parameter(shift_init)
+        self._unc_scale = torch.nn.parameter.Parameter(inv_sftplus(scale_init - 1e-3))
+        # Linear version has zero derivatives w.r.t. a, so we might as well store a as hyperparameter
+        self._unc_b_pos = torch.nn.parameter.Parameter(inv_sftplus(b_pos_init - 1e-3))
+        self._unc_b_neg = torch.nn.parameter.Parameter(inv_sftplus(b_neg_init - 1e-3))
+
+        if fix_params:
+            self.fix_all()
+
+    @property
+    def scale(self):
+        return 1e-3 + softplus(self._unc_scale)
+
+    @property
+    def b_pos(self):
+        return 1e-3 + softplus(self._unc_b_pos)
+
+    @property
+    def b_neg(self):
+        return 1e-3 + softplus(self._unc_b_neg)
+
+    def fix_shift(self):
+        """Freeze location params."""
+        self.shift.requires_grad = False
+        print("Fixed location params.")
+
+    def fix_scale(self):
+        """Freeze scale params."""
+        self._unc_scale.requires_grad = False
+        print("Fixed scale params.")
+
+    def fix_b(self):
+        """Freeze breakpoints."""
+        self._unc_b_pos.requires_grad = False
+        self._unc_b_neg.requires_grad = False
+        print("Fixed b-params.")
+
+
+    def fix_all(self):
+        """Fix all transformation parameters."""
+        self.fix_shift()
+        self.fix_scale()
+        self.fix_b()
+
+    def forward(self, z: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and apply shift & scale.
+        Args:
+            z (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                x (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert z.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {z.ndim}D tensor with shape {z.shape}"
+        assert z.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {z.shape[1]} features (tensor shape: {z.shape})"
+
+        b = torch.where(
+            z >= 0,
+            self.b_pos.expand_as(z),
+            self.b_neg.expand_as(z),
+        )
+
+        if not self.hd_only:
+            # All directions will be transformed
+            x, lad = arcsinh_both_forward(z / b)
+            x = b * x
+
+        else:
+            # transform only in heavy-tailed directions
+            x = z.clone()
+            lad = torch.zeros_like(z)
+
+            if self.mask_lh.any():
+                x[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_right_forward(z[:, self.mask_lh] / b[:, self.mask_lh])
+                x[:, self.mask_lh] = b[:, self.mask_lh] * x[:, self.mask_lh]
+            if self.mask_hl.any():
+                x[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_left_forward(z[:, self.mask_hl] / b[:, self.mask_hl])
+                x[:, self.mask_hl] = b[:, self.mask_hl] * x[:, self.mask_hl]
+            if self.mask_hh.any():
+                x[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_both_forward(z[:, self.mask_hh] / b[:, self.mask_hh])
+                x[:, self.mask_hh] = b[:, self.mask_hh] * x[:, self.mask_hh]
+
+        # Apply shift and scale
+        x = self.shift + x * self.scale
+        lad = lad + torch.log(self.scale)
+
+        return x, lad.sum(dim=-1)
+
+    def inverse(self, x: torch.Tensor, context=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute with specified transformation and take into account shift & scale.
+        Args:
+            x (torch.Tensor): Input tensor (shape: [batch, features]).
+        Returns:
+            (tuple): containing:
+                z (torch.Tensor): transformed tensor (shape: [batch, features]).
+                lad (torch.Tensor): log derivative for each batch element, summed over dimensions (shape: [batch]).
+        """
+        assert x.ndim == 2, f"Expected 2D tensor (shape [batch, features]), got {x.ndim}D tensor with shape {x.shape}"
+        assert x.shape[1] == self.features, f"Expected exactly {self.features} features (shape[1] == {self.features}), got {x.shape[1]} features (tensor shape: {x.shape})"
+
+        # Invert affine transformation
+        x = (x - self.shift) / self.scale
+
+        b = torch.where(
+            x >= 0,
+            self.b_pos.expand_as(x),
+            self.b_neg.expand_as(x),
+        )
+
+        if not self.hd_only:
+            # All directions will be transformed
+            z, lad = arcsinh_both_inverse(x / b)
+            z = b * z
+
+        else:
+            # transform only in heavy-tailed directions
+            z = x.clone()
+            lad = torch.zeros_like(x)
+
+            if self.mask_lh.any():
+                z[:, self.mask_lh], lad[:, self.mask_lh] = arcsinh_right_inverse(x[:, self.mask_lh] / b[:, self.mask_lh])
+                z[:, self.mask_lh] = b[:, self.mask_lh] * z[:, self.mask_lh]
+            if self.mask_hl.any():
+                z[:, self.mask_hl], lad[:, self.mask_hl] = arcsinh_left_inverse(x[:, self.mask_hl] / b[:, self.mask_hl])
+                z[:, self.mask_hl] = b[:, self.mask_hl] * z[:, self.mask_hl]
+            if self.mask_hh.any():
+                z[:, self.mask_hh], lad[:, self.mask_hh] = arcsinh_both_inverse(x[:, self.mask_hh] / b[:, self.mask_hh])
+                z[:, self.mask_hh] = b[:, self.mask_hh] * z[:, self.mask_hh]
+
+        lad = lad - torch.log(self.scale)
+        return z, lad.sum(dim=-1)
+
 
 class AsymmetricTailAffineMarginalTransform(Transform):
     """
