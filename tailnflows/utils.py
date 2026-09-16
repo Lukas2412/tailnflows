@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from filelock import FileLock
 import subprocess
 import pickle
 from typing import Any
@@ -20,47 +21,64 @@ def get_experiment_output_path():
 
 def add_experiment_output_data(path: str, label: str, data: Any, force_write: bool = False) -> None:
     rd_path = f"{get_experiment_output_path()}/{path}.p"
+    lock_path = rd_path + ".lock"
 
     data_file = Path(rd_path)
+    lock = FileLock(lock_path)
 
-    if not data_file.is_file():
-        data_file.parent.mkdir(parents=True, exist_ok=True)
-        pickle.dump({}, open(rd_path, "wb"))
-    elif not force_write:
-        confirm = input("Experiment data already present, reset? (y/n)")
-        if confirm == "y":
-            pickle.dump({}, open(rd_path, "wb"))
-        else:
-            print("no reset, appending data...")
+    with lock:  # Ensures only one process accesses the file at a time
+        if not data_file.is_file():
+            data_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(rd_path, "wb") as f:
+                pickle.dump({}, f)
+        elif not force_write:
+            raise RuntimeError(
+                f"Experiment data already present at {rd_path}. "
+                "Use force_write=True to overwrite, or avoid duplicate runs."
+            )
 
-    raw_data = pickle.load(open(rd_path, "rb"))
-    if label not in raw_data:
-        raw_data[label] = []
-    raw_data[label].append(data)
-    pickle.dump(raw_data, open(rd_path, "wb"))
+        # Now safe to read
+        with open(rd_path, "rb") as f:
+            raw_data = pickle.load(f)
+
+        if label not in raw_data:
+            raw_data[label] = []
+        raw_data[label].append(data)
+
+        # Write back
+        with open(rd_path, "wb") as f:
+            pickle.dump(raw_data, f)
 
 def add_raw_data(path: str, label: str, data: Any, force_write: bool = False) -> int:
     rd_path = f"{path}.p"
+    lock_path = rd_path + ".lock"
 
     data_file = Path(rd_path)
+    lock = FileLock(lock_path)
 
-    if not data_file.is_file():
-        data_file.parent.mkdir(parents=True, exist_ok=True)
-        pickle.dump({}, open(rd_path, "wb"))
-    elif not force_write:
-        confirm = input("Experiment data already present, reset? (y/n)")
-        if confirm == "y":
-            pickle.dump({}, open(rd_path, "wb"))
-        else:
-            print("no reset, appending data...")
+    with lock:
+        if not data_file.is_file():
+            data_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(rd_path, "wb") as f:
+                pickle.dump({}, f)
+        elif not force_write:
+            raise RuntimeError(
+                f"Data file already exists at {rd_path}. "
+                "Use force_write=True to overwrite."
+            )
 
-    raw_data = pickle.load(open(rd_path, "rb"))
-    if label not in raw_data:
-        raw_data[label] = []
+        with open(rd_path, "rb") as f:
+            raw_data = pickle.load(f)
 
-    ix = len(raw_data[label])
-    raw_data[label].append(data)
-    pickle.dump(raw_data, open(rd_path, "wb"))
+        if label not in raw_data:
+            raw_data[label] = []
+
+        ix = len(raw_data[label])
+        raw_data[label].append(data)
+
+        with open(rd_path, "wb") as f:
+            pickle.dump(raw_data, f)
+
     return ix
 
 class CPU_Unpickler(pickle.Unpickler):
