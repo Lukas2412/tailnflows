@@ -7,7 +7,7 @@ import torch
 DEFAULT_DTYPE = torch.float32
 torch.set_default_dtype(DEFAULT_DTYPE)
 
-gpu_ix = 3
+gpu_ix = 2
 if torch.cuda.is_available():
     DEFAULT_DEVICE = torch.device(f"cuda:{gpu_ix}")
     torch.cuda.set_device(gpu_ix) # tensors with device="cuda" will be put on cuda{gpu_ix}
@@ -626,25 +626,36 @@ def run_experiment(
 
     label = f'{data_source}-{split}-{model_label}'
 
-    opt_params["num_steps"] = opt_params["num_epochs"] * x_trn.shape[0] // opt_params["batch_size"]
-    opt_params_copy = opt_params.copy()
-    del opt_params_copy["num_epochs"]
+    # opt_params["num_steps"] = opt_params["num_epochs"] * x_trn.shape[0] // opt_params["batch_size"]
+    # opt_params_copy = opt_params.copy()
+    # del opt_params_copy["num_epochs"]
 
     # Train and evaluate model
-    fit_data = data_fit.train(
+    # fit_data = data_fit.train(
+    #     model,
+    #     x_trn.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
+    #     x_val.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
+    #     x_tst.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
+    #     **opt_params_copy,
+    #     label=label,
+    #     preprocess_transformation=preprocessor,
+    #     device=DEFAULT_DEVICE,
+    # )
+    # tst_loss, val_loss, tst_ix, losses, vlosses, steps, hook_data = fit_data
+    fit_data = data_fit.train_epochs(
         model,
         x_trn.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
         x_val.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
         x_tst.to(device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE),
-        **opt_params_copy,
+        **opt_params,
         label=label,
-        preprocess_transformation=preprocessor,
+        best_model_path=f"{get_experiment_output_path()}/{out_path}/best_models/{label}.pth",
         device=DEFAULT_DEVICE,
     )
-    tst_loss, val_loss, tst_ix, losses, vlosses, steps, hook_data = fit_data
+    tst_loss, val_loss, losses, vlosses = fit_data
 
     # Invertibility check
-    samps = torch.randn(16000, dim, device=DEFAULT_DEVICE)
+    samps = torch.randn(2048, dim, device=DEFAULT_DEVICE)
     is_invertible = invertibility_check(model, samps)
     print(f"Inveritbility check: {is_invertible}")
 
@@ -681,8 +692,8 @@ def run_experiment(
         {
             "losses": losses.detach().cpu(),
             "vlosses": vlosses.detach().cpu(),
-            "steps": steps.detach().cpu(),
-            "tst_ix": tst_ix,
+            # "steps": steps.detach().cpu(),
+            # "tst_ix": tst_ix,
         },
         force_write=True,
     )
@@ -703,9 +714,9 @@ def run_experiment(
         "var99_lt": var_rel_err_lt[0].item(), # Avg rel VaR_99 difference on HT dims
         "var995_lt": var_rel_err_lt[1].item(),
         "var999_lt": var_rel_err_lt[2].item(),
-        "tst_ix": tst_ix,
-        "loss_path": loss_path,
-        "loss_ix": loss_ix,
+        # "tst_ix": tst_ix,
+        # "loss_path": loss_path,
+        # "loss_ix": loss_ix,
         "model_str": model.__repr__(),
         **opt_params,
         **model_config,
@@ -727,6 +738,10 @@ def run_experiment(
         force_write=True,
     )
 
+    # NOTE: Try this to avoid OOM
+    if DEFAULT_DEVICE.type == "cuda":
+        torch.cuda.empty_cache()
+
     print("Experiment completed.")
 
 
@@ -736,7 +751,7 @@ optimisation_overrides = {
         "num_epochs": 400,
         "batch_size": 512, 
         "early_stop_patience": 500,
-        "eval_period": 25,
+        "eval_period": 1,
         "lr_scheduler": None,
     },
     'fama5': {
@@ -744,7 +759,7 @@ optimisation_overrides = {
         "num_epochs": 400, 
         "batch_size": 512, 
         "early_stop_patience": 500,
-        "eval_period": 25,
+        "eval_period": 1,
         "lr_scheduler": None,
     },
     'insurance': {
@@ -752,7 +767,7 @@ optimisation_overrides = {
         "num_epochs": 400,
         "batch_size": 512, 
         "early_stop_patience": 500,
-        "eval_period": 25,
+        "eval_period": 1,
         "lr_scheduler": None,
     },
     'climate': {
@@ -760,7 +775,7 @@ optimisation_overrides = {
         "num_steps": 20_000,
         "batch_size": 512,
         "early_stop_patience": 5_00,
-        "eval_period": 25,
+        "eval_period": 1,
         "lr_scheduler": "cosine_anneal_wr",
     },
 }
@@ -769,41 +784,43 @@ def configured_experiments():
     """ Run several experiments in parallel by modifying the following code. """
 
     model_labels = [
-        # "normal",
+        "normal",
         # # "ttf",
         # "ttf_hdonly",
-        # # "ttf_fix", 
-        # # "ttf_lin",
+        # # # "ttf_fix", 
+        # # # "ttf_lin",
         # "ttf_lin_hdonly",
-        # # "ttf_qua",
+        # # # "ttf_qua",
         # "ttf_qua_hdonly",
-        # # "ttf_erfi",
+        # # # "ttf_erfi",
         # "ttf_erfi_hdonly",
-        # # "softlog",
+        # # # "softlog",
         # "softlog_hdonly",
-        # # "softlog_lin",
+        # # # "softlog_lin",
         # "softlog_lin_hdonly",
-        # # "arcsinh",
+        # # # "arcsinh",
         # "arcsinh_hdonly",
-        # # "arcsinh_lin",
+        # # # "arcsinh_lin",
         # "arcsinh_lin_hdonly",
-        "softarcsinh",
-        "softarcsinh_hdonly",
+        # "softarcsinh",
+        # "softarcsinh_hdonly",
         # "mtaf", 
-        # "gtaf"
+        # "gtaf",
+        # "comet", # comet currently does not work
     ]
 
-    experiment_name = "2026-09-16-de-softarcsinh-test"
+    experiment_name = "2026-09-17-train-test"
     # data_sources = ['climate', 'fama5', 'sp500', 'insurance']
     data_sources = ['insurance']
 
-    opt_params = { # NOTE: ONLY FOR EXPERIMENT TESTING!
+    opt_params = {
         "lr": 1e-4,
-        "num_epochs": 400,
-        "batch_size": 32,
-        "early_stop_patience": None,
-        "eval_period": 500, # period for computing validation loss
+        "num_epochs": 5000,
+        "batch_size": 512,
+        "early_stop_patience": 500,
+        # "eval_period": 1, # period for computing validation loss
         "lr_scheduler": None,
+        "grad_clip": 10.0,
     }
 
     # model_config
@@ -814,8 +831,8 @@ def configured_experiments():
     experiments = []
     print("Setting up experiment plan...")
     for data_source in data_sources:
-        for split in range(10):
-            repeat_seed = 17*split
+        for split in range(1): # NOTE -> 10
+            repeat_seed = 53*split + 1000
 
             if data_source == "climate": # climate data uses different model config
 
@@ -829,8 +846,9 @@ def configured_experiments():
                 }
 
                 for model_label in model_labels:
-                    
-                    opt_params = optimisation_overrides.get(data_source, opt_params)
+
+                    # NOTE: Uncomment to use default (TTF paper) settings
+                    # opt_params = optimisation_overrides.get(data_source, opt_params)
 
                     experiments.append(dict(
                         data_source=data_source,
@@ -855,8 +873,9 @@ def configured_experiments():
                             } # hidden dimension will be feature_dim + 10
 
                             for model_label in model_labels:
-                                
-                                opt_params = optimisation_overrides.get(data_source, opt_params)
+
+                                # NOTE: Uncomment to use default (TTF paper) settings
+                                # opt_params = optimisation_overrides.get(data_source, opt_params)
 
                                 experiments.append(dict(
                                     data_source=data_source,

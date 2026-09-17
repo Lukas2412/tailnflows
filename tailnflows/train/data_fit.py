@@ -1,8 +1,10 @@
+from pathlib import Path
 from math import ceil
 from collections.abc import Iterable
 import torch
 from torch import optim
 import tqdm
+from tailnflows.utils import get_experiment_output_path
 
 def batch_loader(n: int, batch_size: int) -> Iterable[torch.Tensor]:
     batches = torch.randperm(n).split(batch_size)
@@ -31,7 +33,7 @@ def train(
 ):
     parameters = list(model.parameters())
     if optimizer is None:
-        optimizer = optim.Adam(parameters, lr=lr)
+        optimizer = optim.AdamW(parameters, lr=lr)
 
     if lr_scheduler == "cosine_anneal":
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, num_steps, 0)
@@ -134,4 +136,122 @@ def train(
         vlosses[:eval_number + 1].cpu(),  
         steps[:eval_number + 1].cpu(), 
         hook_data
+    )
+
+
+def train_epochs(
+    model,
+    x_trn,
+    x_val,
+    x_tst,
+    best_model_path,
+    lr=1e-4,
+    num_epochs=100,
+    batch_size=256,
+    label="",
+    early_stop_patience=None,
+    grad_clip=None,
+    optimizer=None,
+    lr_scheduler=None,
+    device="cuda",
+):
+    """ Simplified training method. Ditches preprocessing, hook and step data.
+        Measures val performance every epoch.
+        If early stopping is used, best model among the early stopping patience is chosen.
+    """
+    # Check if path to best model path exists, create otherwise
+    if not isinstance(best_model_path, Path):
+        best_model_path = Path(best_model_path)
+    parent_dir = best_model_path.parent
+    if not parent_dir.exists():
+        parent_dir.mkdir(parents=True, exist_ok=True)
+
+    parameters = list(model.parameters())
+    if optimizer is None:
+        optimizer = optim.AdamW(parameters, lr=lr)
+
+    n = x_trn.shape[0]
+    num_steps_per_epoch = n // batch_size
+    num_steps = num_epochs * num_steps_per_epoch
+
+    # Learning rate schedulers
+    if lr_scheduler == "cosine_anneal":
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, num_steps, 0)
+    
+    if lr_scheduler == "cosine_anneal_wr":
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=50, 
+            T_mult=1, 
+            eta_min=5e-7,
+        )
+
+    # training loop data
+    losses = torch.empty(num_epochs)
+    vlosses = torch.empty(num_epochs)
+    best_val_loss = torch.tensor(torch.inf)
+
+    loop = tqdm.tqdm(range(num_epochs))
+
+    for epoch in loop:
+
+        model.train()
+        getattr(optimizer, 'train', lambda: None)()
+
+        batches = torch.randperm(n).split(batch_size)
+
+        for batch_ix in batches:
+
+            # get data batch
+            batch = x_trn[batch_ix, :].to(device)
+            optimizer.zero_grad()
+
+            # compute loss and backprop
+            trn_loss = -model.log_prob(batch).mean()
+            trn_loss.backward()
+
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(parameters, grad_clip)
+            optimizer.step()
+
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+
+        losses[epoch] = trn_loss.detach().cpu()
+
+        model.eval()
+        getattr(optimizer, 'eval', lambda: None)()
+
+        with torch.no_grad():
+
+            val_loss = -model.log_prob(x_val).mean()
+            vlosses[epoch] = val_loss.detach().cpu()
+
+            # Check val loss for early stopping
+            if early_stop_patience is not None:
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    torch.save(model.state_dict(), best_model_path)
+                else:
+                    patience_counter += 1
+                    if patience_counter >= early_stop_patience:
+                        print("Early stopping!")
+                        vlosses[epoch:] = val_loss.detach().cpu()
+                        losses[epoch:] = trn_loss.detach().cpu()
+                        model.load_state_dict(torch.load(best_model_path))
+                        break
+
+        loop.set_postfix(
+            {"loss": f"trn: {losses[epoch]:.2f}, val: {vlosses[epoch]:.2f} ({label} @ epoch {epoch})"}
+        )
+
+    # compute test loss for trained model
+    tst_loss = -model.log_prob(x_tst).mean()
+
+    return (
+        tst_loss.detach().cpu(),
+        val_loss.detach().cpu(),
+        losses.detach().cpu(), 
+        vlosses.detach().cpu(),
     )
