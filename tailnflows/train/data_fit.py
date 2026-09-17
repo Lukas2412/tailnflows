@@ -1,8 +1,11 @@
 from math import ceil
 from collections.abc import Iterable
+from flow_matching import loss
 import torch
 from torch import optim
 import tqdm
+
+from tailnflows.models.flow_matching import cfm_loss
 
 def batch_loader(n: int, batch_size: int) -> Iterable[torch.Tensor]:
     batches = torch.randperm(n).split(batch_size)
@@ -28,10 +31,10 @@ def train(
     preprocess_transformation=None,
     eval_period=1,
     device="cuda",
+    model_type=None, # flow matching vs discrete normalizing flow
 ):
-    parameters = list(model.parameters())
     if optimizer is None:
-        optimizer = optim.Adam(parameters, lr=lr)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     if lr_scheduler == "cosine_anneal":
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, num_steps, 0)
@@ -48,6 +51,10 @@ def train(
         x_trn, _ = preprocess_transformation(x_trn)
         x_val, _ = preprocess_transformation(x_val)
         x_pre, pre_process_lad = preprocess_transformation(x_tst)
+
+    ## FLOW MATCHING ##
+    # if model_type == "flow_matching":
+    #     loss = cfm_loss(model.vf, y.to(self.device), self.q0)
 
     # training loop data
     loop = tqdm.tqdm(range(num_steps))
@@ -66,6 +73,8 @@ def train(
         batch_size = n
     batches = batch_loader(n, batch_size)
 
+    model.to(device)
+
     for step in loop:
         # mini batch
         model.train()
@@ -75,13 +84,23 @@ def train(
         batch = x_trn[batch_ix, :].to(device)
         optimizer.zero_grad()
 
-        trn_loss = -model.log_prob(batch).mean()
-        trn_loss.backward()
+        ## normalizing flow loss
+        if model_type == "norm_flow":
+            trn_loss = -model.log_prob(batch).mean()
+        ## flow matching loss
+        elif model_type == "flow_matching":
+            # Apply inverse tail transform
+            y, _ = model.tail_trafo.inverse(batch)
+            trn_loss = cfm_loss(model.vf, y.to(device), model.q0)
 
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(parameters, grad_clip)
+        # Do backprop and optimizer step
+        if ~(torch.isnan(trn_loss) | torch.isinf(trn_loss)):
+            trn_loss.backward()
 
-        optimizer.step()
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+            optimizer.step()
 
         if lr_scheduler is not None:
             lr_scheduler.step()
@@ -98,15 +117,25 @@ def train(
                 if hook is not None:
                     hook(model, hook_data)
 
-                val_loss = -model.log_prob(x_val).mean()
+                ## normalizing flow loss
+                if model_type == "norm_flow":
+                    val_loss = -model.log_prob(x_val).mean()
+                ## flow matching loss
+                elif model_type == "flow_matching":
+                    y_val, _ = model.tail_trafo.inverse(x_val)
+                    val_loss = cfm_loss(model.vf, y_val.to(device), model.q0)
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    if preprocess_transformation is not None:
-                        tst_loss = -(model.log_prob(x_pre) + pre_process_lad).mean()
+                    ## only relevant for normalizing flow models
+                    if model_type == "norm_flow":
+                        if preprocess_transformation is not None:
+                            tst_loss = -(model.log_prob(x_pre) + pre_process_lad).mean()
+                        else:
+                            tst_loss = -model.log_prob(x_tst).mean()
+                        tst_eval = eval_number
                     else:
-                        tst_loss = -model.log_prob(x_tst).mean()
-                    tst_eval = eval_number
+                        tst_eval = 0
 
                 steps[eval_number] = step
                 vlosses[eval_number] = val_loss.detach()
@@ -119,7 +148,7 @@ def train(
         
         loop.set_postfix(
             {
-                "loss": f"{losses[step]:.2f} ({vlosses[eval_number]:.2f}) {label}: *{tst_loss.detach():.3f} @ {steps[tst_eval]}"
+                "loss train (val)": f"{losses[step]:.2f} ({vlosses[eval_number]:.2f}) {label}: *{tst_loss.detach():.3f} @ {steps[tst_eval]}"
             }
         )
     
